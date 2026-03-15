@@ -4,43 +4,78 @@
 //
 
 import Foundation
+import AppKit
+
+/// Represents what was copied — either plain text or an image.
+///
+/// Using an enum means the compiler forces us to handle both cases
+/// everywhere we use a `ClipboardItem`, so we can never accidentally
+/// treat an image as text or vice versa.
+enum ClipboardContent {
+    case text(String)
+    case image(NSImage)
+}
 
 /// A single entry in the clipboard history.
 ///
-/// Every time the user copies something new, a `ClipboardItem` is created
-/// and stored in `ClipboardManager.history`. It holds the copied text and
-/// the exact time it was copied, so we can display a timestamp in the UI.
-///
-/// `Identifiable` lets SwiftUI's `ForEach` uniquely track each row without
-/// needing an explicit `id:` parameter.
-///
-/// `Equatable` lets us compare two items by their text content, which is
-/// used to avoid adding duplicates to the history list.
-struct ClipboardItem: Identifiable, Equatable {
+/// Holds the copied content (text or image), the time it was copied,
+/// and a unique ID so SwiftUI can track each row independently.
+struct ClipboardItem: Identifiable {
 
-    /// A unique ID generated automatically when the item is created.
-    /// UUID guarantees no two items ever share the same ID, even if
-    /// they contain identical text.
+    /// Auto-generated unique ID. Guarantees no two items share the same ID.
     let id = UUID()
 
-    /// The actual text that was copied to the clipboard.
-    let text: String
+    /// What was copied — either `.text(String)` or `.image(NSImage)`.
+    let content: ClipboardContent
 
-    /// The moment this item was copied. Used to render the time label
-    /// in `ClipboardRowView`.
+    /// When this item was copied. Shown as a timestamp in the UI.
     let date: Date
 
-    /// Creates a new clipboard item with the given text.
-    /// The date is automatically set to right now.
+    // MARK: - Convenience inits
+
+    /// Creates a text item with the current date.
     init(text: String) {
-        self.text = text
+        self.content = .text(text)
         self.date = Date()
     }
 
-    /// Two items are considered equal if they contain the same text.
-    /// We intentionally ignore `id` and `date` here — this is only used
-    /// to detect duplicates before inserting into the history array.
-    static func == (lhs: ClipboardItem, rhs: ClipboardItem) -> Bool {
-        lhs.text == rhs.text
+    /// Creates an image item with the current date.
+    init(image: NSImage) {
+        self.content = .image(image)
+        self.date = Date()
+    }
+
+    /// Creates an item with an explicit date — used when restoring from disk.
+    init(content: ClipboardContent, date: Date) {
+        self.content = content
+        self.date = date
+    }
+
+    // MARK: - Helpers
+
+    /// Returns the text string if this is a text item, otherwise nil.
+    var text: String? {
+        if case .text(let t) = content { return t }
+        return nil
+    }
+
+    /// Returns the image if this is an image item, otherwise nil.
+    var image: NSImage? {
+        if case .image(let img) = content { return img }
+        return nil
+    }
+
+    /// A short string used for duplicate detection.
+    /// For text: the actual string. For images: a pixel-size fingerprint.
+    var deduplicationKey: String {
+        switch content {
+        case .text(let t):
+            return "text:\(t)"
+        case .image(let img):
+            // Two images are considered duplicates if they have the exact same
+            // pixel dimensions. Not perfect but fast and avoids obvious re-adds.
+            let size = img.size
+            return "image:\(size.width)x\(size.height)"
+        }
     }
 }
