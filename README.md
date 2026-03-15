@@ -1,6 +1,6 @@
 # ClipBox
 
-A lightweight macOS clipboard history manager that lives entirely in the background — no Dock icon, no menu bar icon. Press a keyboard shortcut to summon a floating popup near your cursor, browse your last 15 copied items with the arrow keys, and paste any of them back with Enter.
+A lightweight macOS clipboard history manager that lives entirely in the background — no Dock icon. Press a keyboard shortcut to summon a floating popup near your cursor, browse your last 15 copied items with the arrow keys, and paste any of them back with Enter. A small icon in the menu bar lets you clear history and quit the app.
 
 ---
 
@@ -13,7 +13,8 @@ A lightweight macOS clipboard history manager that lives entirely in the backgro
 - **Smart positioning** — The popup appears next to your cursor and automatically adjusts to stay within the screen bounds.
 - **Instant paste** — Selecting an item writes it to the clipboard and triggers ⌘V in your previous app, so it lands exactly where your cursor was.
 - **Adaptive appearance** — Follows the system Light/Dark mode via `.regularMaterial`.
-- **Zero UI footprint** — No Dock icon, no menu bar item. Runs silently in the background.
+- **Menu bar icon** — Click the clipboard icon in the menu bar to open ClipBox, clear history, or quit.
+- **Zero Dock footprint** — No Dock icon, no app switcher clutter. Runs silently in the background.
 
 ---
 
@@ -21,7 +22,7 @@ A lightweight macOS clipboard history manager that lives entirely in the backgro
 
 | | |
 |---|---|
-| **macOS** | 12 Monterey or later |
+| **macOS** | 15.7 Sequoia |
 | **Xcode** | 14 or later |
 | **Swift** | 5.7 or later |
 | **Permissions** | Accessibility (required for global hotkey and simulated paste) |
@@ -41,15 +42,13 @@ A lightweight macOS clipboard history manager that lives entirely in the backgro
 
 Because ClipBox is not notarized through the Apple Developer Program, macOS will block it on first open with *"ClipBox cannot be opened because the developer cannot be verified."*
 
-To bypass this **one time**:
-- Right-click (or Control-click) **ClipBox.app** → **Open** → click **Open** in the dialog.
+To fix this, open **Terminal** (Spotlight → "Terminal") and run:
 
-Or run this in Terminal:
 ```bash
 xattr -cr /Applications/ClipBox.app
 ```
 
-After that, ClipBox opens normally every time.
+Then open ClipBox normally from Applications or Spotlight. This is a one-time step.
 
 **First launch — Accessibility permission**
 
