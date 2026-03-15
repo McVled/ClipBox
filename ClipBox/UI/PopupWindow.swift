@@ -151,7 +151,7 @@ class PopupWindow {
         newPanel.backgroundColor = .clear  // Let SwiftUI's .regularMaterial show through.
         newPanel.level = .floating         // Always on top of regular windows.
         newPanel.hasShadow = false         // Shadow is handled in SwiftUI for clean corners.
-        newPanel.isMovableByWindowBackground = false
+        newPanel.isMovableByWindowBackground = true
         newPanel.ignoresMouseEvents = false // We need clicks to register for row selection.
         newPanel.collectionBehavior = [
             .canJoinAllSpaces,       // Show on every Space (virtual desktop).
