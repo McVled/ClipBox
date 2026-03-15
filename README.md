@@ -22,7 +22,7 @@ A lightweight macOS clipboard history manager that lives entirely in the backgro
 
 | | |
 |---|---|
-| **macOS** | 15.7 Sequoia |
+| **macOS** | 15.7 Sequoia or later |
 | **Xcode** | 14 or later |
 | **Swift** | 5.7 or later |
 | **Permissions** | Accessibility (required for global hotkey and simulated paste) |
