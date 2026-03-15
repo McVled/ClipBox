@@ -6,7 +6,7 @@ A lightweight macOS clipboard history manager that lives entirely in the backgro
 
 ## Features
 
-- **Global shortcut** — Press **⌘ ⇧ V** from any app to open the popup.
+- **Global shortcut** — Press **⌘⇧V** from any app to open the popup.
 - **15-item history** — The last 15 unique texts you copied are remembered automatically.
 - **Keyboard navigation** — Use **↑ / ↓** to move through the list, **Enter** to paste, **Esc** to dismiss.
 - **Mouse support** — Click any row to paste it directly.
@@ -30,37 +30,51 @@ A lightweight macOS clipboard history manager that lives entirely in the backgro
 
 ## Getting Started
 
-### 1. Clone and open the project
+### Installing from DMG (recommended for end users)
 
+1. Download the latest `ClipBox.dmg` from the [Releases](../../releases) page.
+2. Open the DMG file — a window appears with the ClipBox icon and an Applications shortcut.
+3. Drag **ClipBox** onto the **Applications** folder.
+4. Eject the DMG and open ClipBox from **Applications** or **Spotlight** (⌘Space → "ClipBox").
+
+**First launch — Gatekeeper warning**
+
+Because ClipBox is not notarized through the Apple Developer Program, macOS will block it on first open with *"ClipBox cannot be opened because the developer cannot be verified."*
+
+To bypass this **one time**:
+- Right-click (or Control-click) **ClipBox.app** → **Open** → click **Open** in the dialog.
+
+Or run this in Terminal:
 ```bash
-git clone https://github.com/your-username/ClipBox.git
-cd ClipBox
-open ClipBox.xcodeproj
+xattr -cr /Applications/ClipBox.app
 ```
 
-### 2. Configure the target
+After that, ClipBox opens normally every time.
 
-In Xcode, select the **ClipBox** target → **Info** tab, and make sure the following key exists:
+**First launch — Accessibility permission**
 
-| Key | Type | Value |
-|-----|------|-------|
-| `Application is agent (UIElement)` | Boolean | `YES` |
+ClipBox will prompt you to grant Accessibility access. This is required for:
+- The global ⌘⇧V hotkey (CGEventTap needs Accessibility to intercept keys system-wide)
+- The simulated ⌘V paste into other apps
 
-This hides ClipBox from the Dock and the application switcher (⌘Tab).
+Click **Open System Settings** in the prompt, then toggle **ClipBox** on under Privacy & Security → Accessibility.
 
-### 3. Build & Run
+### Quitting ClipBox
 
-Press **⌘R** in Xcode. On first launch, macOS will show a system dialog asking for **Accessibility** permission. Click *Open System Settings* and toggle ClipBox on.
+ClipBox has no Dock icon, but it lives in your **menu bar** (top-right corner). Click the clipboard icon ( 󰅌 ) to access:
 
-> Without Accessibility permission the global hotkey (CGEventTap) and the simulated ⌘V paste will not work.
+| Action | Description |
+|--------|-------------|
+| **Open ClipBox** | Shows the popup (same as ⌘⇧V) |
+| **Clipboard history: N items** | How many items are currently stored |
+| **Clear History** | Wipes all stored clipboard entries |
+| **Quit ClipBox** | Fully exits the app |
 
-### 4. Use it
+### Auto-start on login (optional)
 
-1. Copy anything in any app as usual (**⌘C**).
-2. When you want to paste something from history, press **⌘⇧V**.
-3. The popup appears next to your cursor showing your last 15 copies.
-4. Navigate with **↑ / ↓**, confirm with **Enter** — or just click a row.
-5. The popup closes and the selected text is pasted into your original app.
+To have ClipBox start automatically when you log in:
+1. Open **System Settings** → **General** → **Login Items**
+2. Click **+** and select `ClipBox.app` from your Applications folder
 
 ---
 
@@ -91,9 +105,21 @@ ClipBox/
     └── Info.plist              # LSUIElement = YES (hides from Dock/menu bar)
 ```
 
----
+### Building from source (developers)
 
-## How It Works
+```bash
+git clone https://github.com/your-username/ClipBox.git
+cd ClipBox
+open ClipBox.xcodeproj
+```
+
+In Xcode, select the **ClipBox** target → **Info** tab and confirm:
+
+| Key | Type | Value |
+|-----|------|-------|
+| `Application is agent (UIElement)` | Boolean | `YES` |
+
+Press **⌘R** to build and run. The same Accessibility prompt will appear on first launch.
 
 ### Clipboard Monitoring
 

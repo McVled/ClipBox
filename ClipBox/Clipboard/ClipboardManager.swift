@@ -76,6 +76,14 @@ class ClipboardManager: ObservableObject {
         timer = nil
     }
 
+    /// Removes all items from history. Called from the menu bar "Clear History" action.
+    func clearHistory() {
+        DispatchQueue.main.async {
+            self.history.removeAll()
+            NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
+        }
+    }
+
     /// Called every 0.5 seconds by the timer.
     /// Checks whether new content was copied and, if so, adds it to history.
     private func checkPasteboard() {
@@ -109,6 +117,9 @@ class ClipboardManager: ObservableObject {
             if self.history.count > self.maxItems {
                 self.history = Array(self.history.prefix(self.maxItems))
             }
+
+            // Notify the menu bar label to refresh its item count.
+            NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
         }
     }
 
@@ -145,4 +156,12 @@ class ClipboardManager: ObservableObject {
         keyDown?.post(tap: .cghidEventTap)
         keyUp?.post(tap: .cghidEventTap)
     }
+}
+
+// MARK: - Notification Names
+
+extension Notification.Name {
+    /// Posted whenever `history` is modified (new item added or history cleared).
+    /// Used by `AppDelegate` to keep the menu bar item count label up to date.
+    static let clipBoxHistoryChanged = Notification.Name("clipBoxHistoryChanged")
 }
