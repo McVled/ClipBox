@@ -22,7 +22,7 @@ A lightweight macOS clipboard history manager that lives entirely in the backgro
 
 | | |
 |---|---|
-| **macOS** | 15.7 Sequoia or later |
+| **macOS** | 12 Monterey or later |
 | **Xcode** | 14 or later |
 | **Swift** | 5.7 or later |
 | **Permissions** | Accessibility (required for global hotkey and simulated paste) |
@@ -60,14 +60,12 @@ Click **Open System Settings** in the prompt, then toggle **ClipBox** on under P
 
 ### Quitting ClipBox
 
-ClipBox has no Dock icon, but it lives in your **menu bar** (top-right corner). Click the clipboard icon ( 󰅌 ) to access:
+ClipBox has no Dock icon and no menu bar icon. All controls are inside the popup itself. Press **⌘⇧V** to open it, then use the buttons in the top-right corner of the popup:
 
-| Action | Description |
-|--------|-------------|
-| **Open ClipBox** | Shows the popup (same as ⌘⇧V) |
-| **Clipboard history: N items** | How many items are currently stored |
-| **Clear History** | Wipes all stored clipboard entries |
-| **Quit ClipBox** | Fully exits the app |
+| Button | Action |
+|--------|--------|
+| 🗑 **Clear** | Wipes all stored clipboard entries (disabled when history is empty) |
+| ✕ **Quit** | Fully exits ClipBox |
 
 ### Auto-start on login (optional)
 
