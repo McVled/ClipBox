@@ -29,14 +29,23 @@ struct PopupView: View {
 
     // MARK: - State
 
+    /// Which tab is currently active.
+    enum Tab: String, CaseIterable {
+        case history = "History"
+        case pinned  = "Pinned"
+    }
+
+    @State private var selectedTab: Tab = .history
+
     /// The index of the currently highlighted row. Starts at 0 (most recent item).
-    /// Changed by arrow-key presses; triggers scrolling and highlight updates.
     @State private var selectedIndex: Int = 0
 
     /// Tracks whether a clear animation is in progress.
-    /// When true, the rows fade out before the history is actually wiped
-    /// and the popup closes.
     @State private var isClearing: Bool = false
+
+    /// Whether the popup follows the cursor or stays at its last position.
+    @State private var followCursor: Bool = PopupWindow.shared.followCursor
+
 
     // MARK: - Callbacks
 
@@ -59,61 +68,82 @@ struct PopupView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.secondary)
 
-                Text("Clipboard History")
+                Text("ClipBox")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.secondary)
 
                 Spacer()
 
-                // ── Clear History button ──────────────────────────────────
-                // Tapping this starts a short fade-out animation on the list,
-                // then wipes history and closes the popup after a brief delay.
+                // ── Follow Cursor toggle ─────────────────────────────────
+                Button(action: {
+                    followCursor.toggle()
+                    PopupWindow.shared.followCursor = followCursor
+                }) {
+                    Label("Follow", systemImage: "cursorarrow.motionlines")
+                        .font(.system(size: 11))
+                        .foregroundColor(followCursor ? .accentColor : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help(followCursor ? "Follow Cursor: On" : "Follow Cursor: Off")
+
+                Divider()
+                    .frame(height: 12)
+                    .padding(.horizontal, 2)
+
+                // ── Clear All button ─────────────────────────────────────
                 Button(action: {
                     triggerClearWithAnimation()
                 }) {
-                    Label("Clear", systemImage: "trash")
+                    Text("Clear All")
                         .font(.system(size: 11))
-                        .foregroundColor(clipboardManager.history.isEmpty ? .secondary.opacity(0.35) : .secondary)
+                        .foregroundColor(currentItems.isEmpty ? .secondary.opacity(0.35) : .secondary)
                 }
                 .buttonStyle(.plain)
-                .disabled(clipboardManager.history.isEmpty || isClearing)
-                .help("Clear clipboard history")
+                .disabled(currentItems.isEmpty || isClearing)
 
-                // Thin separator between the two buttons
                 Divider()
                     .frame(height: 12)
                     .padding(.horizontal, 2)
 
                 // ── Quit button ───────────────────────────────────────────
-                // Exits ClipBox entirely. Uses NSApp.terminate so the
-                // applicationWillTerminate cleanup in AppDelegate still runs.
                 Button(action: {
                     NSApplication.shared.terminate(nil)
                 }) {
-                    Label("Quit", systemImage: "xmark.circle")
+                    Text("Quit App")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Quit ClipBox")
             }
             .padding(.horizontal, 12)
             .padding(.top, 10)
+            .padding(.bottom, 4)
+
+            // ── Tab Picker ───────────────────────────────────────────────
+            Picker("", selection: $selectedTab) {
+                ForEach(Tab.allCases, id: \.self) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 12)
             .padding(.bottom, 8)
+            .onChange(of: selectedTab) { _ in
+                selectedIndex = 0
+            }
 
             Divider()
 
             // ── List or empty state ───────────────────────────────────────
-            if clipboardManager.history.isEmpty {
-                // Nothing has been copied yet — show a gentle placeholder.
+            if currentItems.isEmpty {
                 VStack(spacing: 6) {
-                    Image(systemName: "doc.on.clipboard")
+                    Image(systemName: selectedTab == .history ? "doc.on.clipboard" : "pin")
                         .font(.system(size: 24))
                         .foregroundColor(.secondary.opacity(0.4))
-                    Text("History is empty")
+                    Text(selectedTab == .history ? "History is empty" : "No pinned items")
                         .font(.system(size: 12))
                         .foregroundColor(.secondary)
-                    Text("Copy something to get started")
+                    Text(selectedTab == .history ? "Copy something to get started" : "Pin items from History to keep them here")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary.opacity(0.6))
                 }
@@ -121,28 +151,30 @@ struct PopupView: View {
                 .padding(.vertical, 30)
 
             } else {
-                // `ScrollViewReader` lets us programmatically scroll to any row
-                // by its ID when `selectedIndex` changes (arrow key navigation).
                 ScrollViewReader { proxy in
                     ScrollView(.vertical, showsIndicators: false) {
                         LazyVStack(spacing: 2) {
-                            // `enumerated()` gives us both the index and the item,
-                            // which we need to pass `isSelected` and the badge number.
-                            ForEach(Array(clipboardManager.history.enumerated()), id: \.element.id) { index, item in
+                            ForEach(Array(currentItems.enumerated()), id: \.element.id) { index, item in
                                 ClipboardRowView(
                                     item: item,
                                     index: index,
                                     isSelected: index == selectedIndex,
+                                    isPinned: selectedTab == .pinned,
                                     onSelect: {
                                         onPaste(item)
-                                    }
+                                    },
+                                    onTogglePin: {
+                                        if selectedTab == .history {
+                                            clipboardManager.pinItem(item)
+                                        } else {
+                                            clipboardManager.unpinItem(item)
+                                        }
+                                    },
+                                    onDelete: selectedTab == .history ? {
+                                        clipboardManager.deleteHistoryItem(item)
+                                    } : nil
                                 )
-                                // Tag each row with its index so ScrollViewReader
-                                // can scroll to it by calling proxy.scrollTo(index).
-                                .id(index)
-                                // Each row fades out with a slight stagger when clearing.
-                                // The delay is proportional to the row index so rows
-                                // disappear top-to-bottom rather than all at once.
+                                .id(item.id)
                                 .opacity(isClearing ? 0 : 1)
                                 .animation(
                                     .easeIn(duration: 0.25).delay(Double(index) * 0.04),
@@ -153,19 +185,17 @@ struct PopupView: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 4)
                     }
-                    // Whenever selectedIndex changes, smoothly scroll the list
-                    // so the highlighted row is always visible.
                     .onChange(of: selectedIndex) { newIndex in
+                        guard newIndex < currentItems.count else { return }
                         withAnimation(.easeInOut(duration: 0.1)) {
-                            proxy.scrollTo(newIndex, anchor: .center)
+                            proxy.scrollTo(currentItems[newIndex].id, anchor: .center)
                         }
                     }
                 }
             }
 
             // ── Footer — keyboard hints ───────────────────────────────────
-            // Only shown when there are items to navigate.
-            if !clipboardManager.history.isEmpty {
+            if !currentItems.isEmpty {
                 Divider()
                 HStack(spacing: 12) {
                     Label("Navigate", systemImage: "arrow.up.arrow.down")
@@ -202,6 +232,13 @@ struct PopupView: View {
         }
     }
 
+    // MARK: - Computed Properties
+
+    /// Returns items for the currently active tab.
+    private var currentItems: [ClipboardItem] {
+        selectedTab == .history ? clipboardManager.history : clipboardManager.pinnedItems
+    }
+
     // MARK: - Clear Animation
 
     /// Triggers a staggered fade-out on all rows, then clears history and
@@ -218,13 +255,18 @@ struct PopupView: View {
         // Wait for the stagger animation to finish before wiping data and closing.
         // The total animation time = duration (0.25s) + last row delay (items × 0.04s).
         // We add a small extra buffer (0.1s) so the last row fully fades before close.
-        let itemCount = clipboardManager.history.count
+        let itemCount = currentItems.count
         let totalDelay = 0.25 + Double(itemCount) * 0.04 + 0.1
 
         DispatchQueue.main.asyncAfter(deadline: .now() + totalDelay) {
-            ClipboardManager.shared.clearHistory()
-            onClose()
+            
+            if self.selectedTab == .history {
+                ClipboardManager.shared.clearHistory()
+            } else {
+                ClipboardManager.shared.clearPinnedItems()
+            }
         }
+        self.isClearing = false
     }
 
     // MARK: - Keyboard Handling
@@ -249,18 +291,19 @@ struct PopupView: View {
             return
         }
 
-        let count = clipboardManager.history.count
+        let items = currentItems
+        let count = items.count
         guard count > 0 else { return }
 
         switch keyCode {
-        case 125: // Arrow Down — move selection one row down
+        case 125: // Arrow Down
             selectedIndex = min(selectedIndex + 1, count - 1)
 
-        case 126: // Arrow Up — move selection one row up
+        case 126: // Arrow Up
             selectedIndex = max(selectedIndex - 1, 0)
 
-        case 36, 76: // Return / Numpad Enter — paste the selected item
-            onPaste(clipboardManager.history[selectedIndex])
+        case 36, 76: // Return / Numpad Enter
+            onPaste(items[selectedIndex])
 
         default:
             break

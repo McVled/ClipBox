@@ -29,6 +29,7 @@ class ClipboardManager: ObservableObject {
     // MARK: - Published State
 
     @Published var history: [ClipboardItem] = []
+    @Published var pinnedItems: [ClipboardItem] = []
 
     // MARK: - Private Properties
 
@@ -55,10 +56,14 @@ class ClipboardManager: ObservableObject {
     /// UserDefaults key for the history index (order + metadata).
     private let indexKey = "com.clipbox.historyIndex"
 
+    /// UserDefaults key for pinned items.
+    private let pinnedIndexKey = "com.clipbox.pinnedIndex"
+
     // MARK: - Init
 
     private init() {
         loadHistory()
+        loadPinnedItems()
     }
 
     // MARK: - Persistence: Save
@@ -103,12 +108,17 @@ class ClipboardManager: ObservableObject {
         pruneOrphanedImageFiles()
     }
 
-    /// Removes PNG files from disk that are no longer in the history index.
+    /// Removes PNG files from disk that are no longer in the history or pinned index.
     private func pruneOrphanedImageFiles() {
-        let activeFilenames = Set(history.compactMap { item -> String? in
+        let historyFilenames = history.compactMap { item -> String? in
             guard case .image = item.content else { return nil }
             return "\(item.id).png"
-        })
+        }
+        let pinnedFilenames = pinnedItems.compactMap { item -> String? in
+            guard case .image = item.content else { return nil }
+            return "pinned_\(item.id).png"
+        }
+        let activeFilenames = Set(historyFilenames + pinnedFilenames)
 
         let allFiles = (try? FileManager.default.contentsOfDirectory(
             atPath: imagesDirectory.path
@@ -160,6 +170,93 @@ class ClipboardManager: ObservableObject {
         history = loaded
     }
 
+    // MARK: - Pinned Items
+
+    /// Pins a clipboard item. Copies it to the pinned list (history stays unchanged).
+    func pinItem(_ item: ClipboardItem) {
+        // Avoid duplicates in pinned
+        guard !pinnedItems.contains(where: { $0.deduplicationKey == item.deduplicationKey }) else { return }
+        // Create a fresh copy so pinned item has its own identity
+        let pinned = ClipboardItem(content: item.content, date: item.date)
+        pinnedItems.insert(pinned, at: 0)
+        savePinnedItems()
+        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
+    }
+
+    /// Unpins a clipboard item. Removes it from the pinned list only.
+    func unpinItem(_ item: ClipboardItem) {
+        pinnedItems.removeAll { $0.id == item.id }
+        savePinnedItems()
+        pruneOrphanedImageFiles()
+        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
+    }
+
+    /// Saves pinned items to disk (same format as history).
+    private func savePinnedItems() {
+        var indexEntries: [[String: String]] = []
+
+        for item in pinnedItems {
+            switch item.content {
+            case .text(let text):
+                indexEntries.append([
+                    "type": "text",
+                    "value": text,
+                    "date": ISO8601DateFormatter().string(from: item.date)
+                ])
+            case .image(let image):
+                let filename = "pinned_\(item.id).png"
+                let fileURL  = imagesDirectory.appendingPathComponent(filename)
+                if let pngData = image.pngData() {
+                    try? pngData.write(to: fileURL)
+                }
+                indexEntries.append([
+                    "type": "image",
+                    "filename": filename,
+                    "date": ISO8601DateFormatter().string(from: item.date)
+                ])
+            }
+        }
+
+        if let data = try? JSONEncoder().encode(indexEntries) {
+            UserDefaults.standard.set(data, forKey: pinnedIndexKey)
+        }
+    }
+
+    /// Restores pinned items from disk on launch.
+    private func loadPinnedItems() {
+        guard let data = UserDefaults.standard.data(forKey: pinnedIndexKey),
+              let entries = try? JSONDecoder().decode([[String: String]].self, from: data)
+        else { return }
+
+        let formatter = ISO8601DateFormatter()
+        var loaded: [ClipboardItem] = []
+
+        for entry in entries {
+            guard let type = entry["type"],
+                  let dateStr = entry["date"],
+                  let date = formatter.date(from: dateStr)
+            else { continue }
+
+            switch type {
+            case "text":
+                if let text = entry["value"] {
+                    loaded.append(ClipboardItem(content: .text(text), date: date))
+                }
+            case "image":
+                if let filename = entry["filename"] {
+                    let fileURL = imagesDirectory.appendingPathComponent(filename)
+                    if let image = NSImage(contentsOf: fileURL) {
+                        loaded.append(ClipboardItem(content: .image(image), date: date))
+                    }
+                }
+            default:
+                break
+            }
+        }
+
+        pinnedItems = loaded
+    }
+
     // MARK: - Monitoring
 
     func startMonitoring() {
@@ -175,10 +272,34 @@ class ClipboardManager: ObservableObject {
         timer = nil
     }
 
+    /// Deletes a single item from history.
+    func deleteHistoryItem(_ item: ClipboardItem) {
+        history.removeAll { $0.id == item.id }
+        saveHistory()
+        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
+    }
+
+    /// Deletes a single item from pinned.
+    func deletePinnedItem(_ item: ClipboardItem) {
+        pinnedItems.removeAll { $0.id == item.id }
+        savePinnedItems()
+        pruneOrphanedImageFiles()
+        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
+    }
+
     func clearHistory() {
         DispatchQueue.main.async {
             self.history.removeAll()
             self.saveHistory()
+            NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
+        }
+    }
+
+    func clearPinnedItems() {
+        DispatchQueue.main.async {
+            self.pinnedItems.removeAll()
+            self.savePinnedItems()
+            self.pruneOrphanedImageFiles()
             NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
         }
     }

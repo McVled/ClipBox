@@ -83,6 +83,18 @@ class PopupWindow {
     /// the text lands in the right place.
     private var previousApp: NSRunningApplication?
 
+    /// The last position where the popup was shown. Used when "Follow Cursor" is off.
+    private var lastPosition: NSPoint?
+
+    /// UserDefaults key for the follow cursor preference.
+    private static let followCursorKey = "com.clipbox.followCursor"
+
+    /// Whether the popup should open at the cursor position or at its last location.
+    var followCursor: Bool {
+        get { UserDefaults.standard.object(forKey: Self.followCursorKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: Self.followCursorKey) }
+    }
+
     // MARK: - Init
 
     private init() {}
@@ -169,8 +181,12 @@ class PopupWindow {
             )
         }
 
-        // ⑥ Position near the cursor and show.
-        positionPanel(newPanel, at: mouseLocation)
+        // ⑥ Position near the cursor (or at last position if Follow Cursor is off).
+        if !followCursor, let lastPos = lastPosition {
+            newPanel.setFrameOrigin(lastPos)
+        } else {
+            positionPanel(newPanel, at: mouseLocation)
+        }
 
         // `makeKeyAndOrderFront` makes the panel the key window (so it gets keyDown)
         // AND shows it on screen. Because of `.nonactivatingPanel`, ClipBox does NOT
@@ -200,6 +216,11 @@ class PopupWindow {
         if let m = mouseMonitor {
             NSEvent.removeMonitor(m)
             mouseMonitor = nil
+        }
+
+        // Save position before closing so we can reopen here if Follow Cursor is off.
+        if let frame = panel?.frame {
+            lastPosition = frame.origin
         }
 
         panel?.orderOut(nil) // Hides the panel without destroying it.
