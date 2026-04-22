@@ -1,3 +1,16 @@
+# Xcode user files
 .DS_Store
 xcuserdata/
 *.xcuserstate
+*.xcworkspace/xcuserdata/
+
+# Build artifacts
+build/
+DerivedData/
+.build/
+*.xcarchive
+*.ipa
+
+# Dependencies
+Pods/
+.swiftpm/
