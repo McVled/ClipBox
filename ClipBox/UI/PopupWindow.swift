@@ -32,7 +32,9 @@ import SwiftUI
 private class KeyablePanel: NSPanel {
 
     /// Called by PopupWindow to forward key presses to SwiftUI via NotificationCenter.
-    var onKeyDown: ((UInt16) -> Void)?
+    /// Passes keyCode, modifier flags, and characters so the Settings "record shortcut"
+    /// flow can capture the full combination — plain navigation uses only keyCode.
+    var onKeyDown: ((UInt16, NSEvent.ModifierFlags, String) -> Void)?
 
     /// Returning `true` allows `makeKeyAndOrderFront` to promote this panel
     /// to key window status, enabling direct `keyDown` delivery.
@@ -46,7 +48,7 @@ private class KeyablePanel: NSPanel {
     /// We forward the key code to our closure instead of calling `super`
     /// (which would trigger the default beep for unhandled keys).
     override func keyDown(with event: NSEvent) {
-        onKeyDown?(event.keyCode)
+        onKeyDown?(event.keyCode, event.modifierFlags, event.charactersIgnoringModifiers ?? "")
     }
 }
 
@@ -86,12 +88,17 @@ class PopupWindow {
     /// The last position where the popup was shown. Used when "Follow Cursor" is off.
     private var lastPosition: NSPoint?
 
+    /// `true` when the current popup session was triggered via the status-bar
+    /// icon rather than the global hotkey or cursor. On close, we skip updating
+    /// `lastPosition` so the hotkey / drag-based memory is preserved.
+    private var openedFromStatusBar = false
+
     /// UserDefaults key for the follow cursor preference.
     private static let followCursorKey = "com.clipbox.followCursor"
 
     /// Whether the popup should open at the cursor position or at its last location.
     var followCursor: Bool {
-        get { UserDefaults.standard.object(forKey: Self.followCursorKey) as? Bool ?? true }
+        get { UserDefaults.standard.object(forKey: Self.followCursorKey) as? Bool ?? false }
         set { UserDefaults.standard.set(newValue, forKey: Self.followCursorKey) }
     }
 
@@ -102,13 +109,16 @@ class PopupWindow {
     // MARK: - Public API
 
     /// Opens the popup if closed, or closes it if already open.
-    func toggle() {
-        isVisible ? close() : show()
+    /// Pass an `anchor` rect (in screen coordinates) to position the popup
+    /// below a specific UI element — e.g. the menu-bar status item — instead
+    /// of using the cursor / last-position logic.
+    func toggle(from anchor: NSRect? = nil) {
+        isVisible ? close() : show(from: anchor)
     }
 
     // MARK: - Show
 
-    func show() {
+    func show(from anchor: NSRect? = nil) {
         guard !isVisible else { return }
         isVisible = true
 
@@ -172,21 +182,31 @@ class PopupWindow {
         newPanel.contentView = NSHostingView(rootView: popupView)
 
         // ⑤ Wire up key forwarding from the panel to SwiftUI via NotificationCenter.
-        newPanel.onKeyDown = { [weak self] keyCode in
+        newPanel.onKeyDown = { [weak self] keyCode, flags, chars in
             guard self?.isVisible == true else { return }
             NotificationCenter.default.post(
                 name: .clipBoxKeyDown,
                 object: nil,
-                userInfo: ["keyCode": keyCode]
+                userInfo: [
+                    "keyCode": keyCode,
+                    "flags":   flags.rawValue,
+                    "chars":   chars
+                ]
             )
         }
 
-        // ⑥ Position near the cursor (or at last position if Follow Cursor is off).
-        if !followCursor, let lastPos = lastPosition {
+        // ⑥ Position: anchor (status bar) → last-position / cursor.
+        //   Status-bar opens always place the popup below the icon and don't
+        //   touch `lastPosition` so the hotkey-open memory is preserved.
+        if let anchor = anchor {
+            positionPanel(newPanel, anchoredTo: anchor)
+        } else if !followCursor, let lastPos = lastPosition {
             newPanel.setFrameOrigin(lastPos)
         } else {
             positionPanel(newPanel, at: mouseLocation)
         }
+
+        openedFromStatusBar = anchor != nil
 
         // `makeKeyAndOrderFront` makes the panel the key window (so it gets keyDown)
         // AND shows it on screen. Because of `.nonactivatingPanel`, ClipBox does NOT
@@ -212,16 +232,23 @@ class PopupWindow {
         guard isVisible else { return }
         isVisible = false
 
+        // Safety net: if the user abandoned a shortcut recording session by
+        // closing the popup, make sure the global tap starts responding again.
+        HotkeyManager.shared.isRecording = false
+
         // Always remove monitors before releasing the panel, to avoid dangling callbacks.
         if let m = mouseMonitor {
             NSEvent.removeMonitor(m)
             mouseMonitor = nil
         }
 
-        // Save position before closing so we can reopen here if Follow Cursor is off.
-        if let frame = panel?.frame {
+        // Save position so we can reopen here when Follow Cursor is off.
+        // Skip when opened from the status bar — the anchored position is driven
+        // by the icon location, not where the user last positioned the popup.
+        if !openedFromStatusBar, let frame = panel?.frame {
             lastPosition = frame.origin
         }
+        openedFromStatusBar = false
 
         panel?.orderOut(nil) // Hides the panel without destroying it.
         panel = nil
@@ -261,6 +288,31 @@ class PopupWindow {
 
         // Clamp top edge: if the panel would exceed the menu bar, pin to top.
         if y + size.height > sf.maxY { y = sf.maxY - size.height - offset }
+
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    /// Positions the panel horizontally centered on and vertically below a
+    /// given screen-space rect — used when the popup is summoned from the
+    /// menu-bar status item.
+    private func positionPanel(_ panel: NSPanel, anchoredTo anchor: NSRect) {
+        let size = NSSize(width: 340, height: 380)
+        let gap: CGFloat = 4
+
+        // Find which screen the anchor lives on. Fall back to main.
+        let screen = NSScreen.screens.first(where: { $0.frame.intersects(anchor) })
+                     ?? NSScreen.main
+        let sf = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+
+        // Center horizontally under the anchor, then clamp inside `visibleFrame`.
+        var x = anchor.midX - size.width / 2
+        if x < sf.minX + 4              { x = sf.minX + 4 }
+        if x + size.width > sf.maxX - 4 { x = sf.maxX - size.width - 4 }
+
+        // Below the anchor by default; flip above if it would fall off-screen
+        // (e.g. edge cases with a Dock at the bottom of a small display).
+        var y = anchor.minY - size.height - gap
+        if y < sf.minY { y = anchor.maxY + gap }
 
         panel.setFrameOrigin(NSPoint(x: x, y: y))
     }

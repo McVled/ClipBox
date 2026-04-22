@@ -34,8 +34,35 @@ class HotkeyManager {
     // MARK: - Public Interface
 
     /// Set this closure before calling `start()`.
-    /// It will be called on the main thread whenever ⌘⇧V is pressed.
+    /// It will be called on the main thread whenever the configured shortcut fires.
     var onTrigger: (() -> Void)?
+
+    /// When true, the global tap does NOT fire `onTrigger` and does NOT consume
+    /// events. Used while the user is recording a new shortcut in Settings,
+    /// so the chosen combination reaches the popup's key handler for capture
+    /// instead of being swallowed or re-triggering the popup.
+    var isRecording: Bool = false
+
+    /// UserDefaults key for the persisted shortcut.
+    private static let shortcutKey = "com.clipbox.shortcut"
+
+    /// The shortcut currently listened for. Reads & writes go through UserDefaults
+    /// so the value survives restarts and updates take effect live (the tap
+    /// callback reads this property on every keypress).
+    var currentShortcut: Shortcut {
+        get {
+            if let data = UserDefaults.standard.data(forKey: Self.shortcutKey),
+               let s = try? JSONDecoder().decode(Shortcut.self, from: data) {
+                return s
+            }
+            return .default
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue) {
+                UserDefaults.standard.set(data, forKey: Self.shortcutKey)
+            }
+        }
+    }
 
     // MARK: - Private Properties
 
@@ -55,12 +82,32 @@ class HotkeyManager {
     /// Installs the global event tap and starts listening for ⌘⇧V.
     /// Safe to call multiple times — subsequent calls are no-ops if already running.
     func start() {
+        // Guard against double-registration. Without this, calling start() twice
+        // would leak the previous CGEventTap and run-loop source, and both taps
+        // would fire the callback on every keypress.
+        guard eventTap == nil else { return }
+
         // Ask for Accessibility permission. `kAXTrustedCheckOptionPrompt: true`
         // means macOS will show the system prompt if permission hasn't been granted yet.
         let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true]
         let trusted = AXIsProcessTrustedWithOptions(options)
         if !trusted {
             print("ClipBox: Waiting for Accessibility permission. Please allow in System Settings.")
+            // The system prompt above is a one-shot — if the user dismisses it
+            // the hotkey will silently never fire. Show our own alert with a
+            // direct link to the pane so they don't have to hunt for it.
+            DispatchQueue.main.async {
+                let alert = NSAlert()
+                alert.messageText = "Accessibility Permission Required"
+                alert.informativeText = "ClipBox needs Accessibility access to listen for its global shortcut. Enable ClipBox in System Settings → Privacy & Security → Accessibility, then restart the app."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "Open System Settings")
+                alert.addButton(withTitle: "Later")
+                if alert.runModal() == .alertFirstButtonReturn,
+                   let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
         }
 
         // We only care about keyDown events, so build a bitmask for just that type.
@@ -77,21 +124,36 @@ class HotkeyManager {
                 return Unmanaged.passRetained(event)
             }
 
+            // Recover our HotkeyManager instance from the raw pointer so we can
+            // read the current shortcut config and the recording flag.
+            guard let ref = refcon else {
+                return Unmanaged.passRetained(event)
+            }
+            let manager = Unmanaged<HotkeyManager>.fromOpaque(ref).takeUnretainedValue()
+
+            // While the user is recording a new shortcut in Settings, pass every
+            // keypress through untouched — the popup's KeyablePanel will capture
+            // the combination locally.
+            if manager.isRecording {
+                return Unmanaged.passRetained(event)
+            }
+
             let flags   = event.flags
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+            let sc      = manager.currentShortcut
 
-            // Check for ⌘⇧V: Command + Shift + V (keyCode 9)
-            let isCommand = flags.contains(.maskCommand)
-            let isShift   = flags.contains(.maskShift)
-            let isV       = keyCode == 9
+            // Every modifier state must match exactly — otherwise ⌘V would also
+            // fire a shortcut configured as ⌘⇧V (wrong) because `contains` alone
+            // would still match.
+            let cmdMatch   = flags.contains(.maskCommand)   == sc.command
+            let shiftMatch = flags.contains(.maskShift)     == sc.shift
+            let optMatch   = flags.contains(.maskAlternate) == sc.option
+            let ctrlMatch  = flags.contains(.maskControl)   == sc.control
+            let keyMatch   = keyCode == Int64(sc.keyCode)
 
-            if isCommand && isShift && isV {
-                // Recover our HotkeyManager instance from the raw pointer.
-                if let ref = refcon {
-                    let manager = Unmanaged<HotkeyManager>.fromOpaque(ref).takeUnretainedValue()
-                    DispatchQueue.main.async {
-                        manager.onTrigger?()
-                    }
+            if cmdMatch && shiftMatch && optMatch && ctrlMatch && keyMatch {
+                DispatchQueue.main.async {
+                    manager.onTrigger?()
                 }
                 // Returning nil *consumes* the event — it won't reach any other app.
                 return nil

@@ -34,6 +34,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             PopupWindow.shared.toggle()
         }
         HotkeyManager.shared.start()
+
+        // Install the optional menu-bar icon if the user has it enabled.
+        StatusBarController.shared.applyCurrentSetting()
     }
 
     // MARK: - Quit

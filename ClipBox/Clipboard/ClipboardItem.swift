@@ -31,24 +31,40 @@ struct ClipboardItem: Identifiable {
     /// When this item was copied. Shown as a timestamp in the UI.
     let date: Date
 
+    /// Optional user-supplied label shown in place of the real content when
+    /// the item is pinned as sensitive (e.g. "Yahoo password"). Only used for
+    /// pinned items; always `nil` for fresh clipboard captures.
+    let description: String?
+
+    /// When `true`, the row renders bullets (••••••••) + a lock icon + the
+    /// description instead of the real content. The actual clipboard value is
+    /// preserved and pasted as-is — hiding is purely visual.
+    let isHidden: Bool
+
     // MARK: - Convenience inits
 
     /// Creates a text item with the current date.
-    init(text: String) {
+    init(text: String, description: String? = nil, isHidden: Bool = false) {
         self.content = .text(text)
         self.date = Date()
+        self.description = description
+        self.isHidden = isHidden
     }
 
     /// Creates an image item with the current date.
-    init(image: NSImage) {
+    init(image: NSImage, description: String? = nil, isHidden: Bool = false) {
         self.content = .image(image)
         self.date = Date()
+        self.description = description
+        self.isHidden = isHidden
     }
 
     /// Creates an item with an explicit date — used when restoring from disk.
-    init(content: ClipboardContent, date: Date) {
+    init(content: ClipboardContent, date: Date, description: String? = nil, isHidden: Bool = false) {
         self.content = content
         self.date = date
+        self.description = description
+        self.isHidden = isHidden
     }
 
     // MARK: - Helpers

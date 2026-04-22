@@ -33,8 +33,26 @@ class ClipboardManager: ObservableObject {
 
     // MARK: - Private Properties
 
-    /// Maximum items in history (text + images combined).
-    private let maxItems = 15
+    /// UserDefaults key and default value for the history size limit.
+    static let historyLimitKey     = "com.clipbox.historyLimit"
+    static let historyLimitDefault = 15
+
+    /// Maximum items in history (text + images combined). Reads from UserDefaults
+    /// so changes in Settings take effect without restarting the app.
+    var maxItems: Int {
+        let v = UserDefaults.standard.integer(forKey: Self.historyLimitKey)
+        return v > 0 ? v : Self.historyLimitDefault
+    }
+
+    /// Trims history to the current limit and saves. Called after the user
+    /// changes the History Size setting.
+    func applyHistoryLimit() {
+        let limit = maxItems
+        guard history.count > limit else { return }
+        history = Array(history.prefix(limit))
+        saveHistory()
+        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
+    }
 
     /// Maximum pixel size (longest edge) for stored images.
     private let maxImageDimension: CGFloat = 1024
@@ -167,17 +185,39 @@ class ClipboardManager: ObservableObject {
             }
         }
 
-        history = loaded
+        // Honour the user's history-size setting on restore — without this, a
+        // user who lowered the limit would still see the old (larger) list
+        // until the next copy triggered `trimAndSave`.
+        history = Array(loaded.prefix(maxItems))
+        if loaded.count > maxItems {
+            saveHistory()
+        }
     }
 
     // MARK: - Pinned Items
 
+    /// Returns the existing pinned item matching the given item's dedup key, or nil.
+    /// Used by history rows so they can show an "already pinned" indicator and
+    /// offer an Unpin action instead of silently failing a re-pin.
+    func existingPin(for item: ClipboardItem) -> ClipboardItem? {
+        pinnedItems.first(where: { $0.deduplicationKey == item.deduplicationKey })
+    }
+
     /// Pins a clipboard item. Copies it to the pinned list (history stays unchanged).
-    func pinItem(_ item: ClipboardItem) {
+    ///
+    /// `description` and `isHidden` are optional — pass them to pin an item as
+    /// "sensitive" (e.g. a password), which renders as bullets + a user label
+    /// in the list but still pastes the real content.
+    func pinItem(_ item: ClipboardItem, description: String? = nil, isHidden: Bool = false) {
         // Avoid duplicates in pinned
         guard !pinnedItems.contains(where: { $0.deduplicationKey == item.deduplicationKey }) else { return }
-        // Create a fresh copy so pinned item has its own identity
-        let pinned = ClipboardItem(content: item.content, date: item.date)
+        // Create a fresh copy so pinned item has its own identity.
+        let pinned = ClipboardItem(
+            content:     item.content,
+            date:        item.date,
+            description: description,
+            isHidden:    isHidden
+        )
         pinnedItems.insert(pinned, at: 0)
         savePinnedItems()
         NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
@@ -196,25 +236,30 @@ class ClipboardManager: ObservableObject {
         var indexEntries: [[String: String]] = []
 
         for item in pinnedItems {
+            var entry: [String: String] = [
+                "date": ISO8601DateFormatter().string(from: item.date)
+            ]
             switch item.content {
             case .text(let text):
-                indexEntries.append([
-                    "type": "text",
-                    "value": text,
-                    "date": ISO8601DateFormatter().string(from: item.date)
-                ])
+                entry["type"]  = "text"
+                entry["value"] = text
             case .image(let image):
                 let filename = "pinned_\(item.id).png"
                 let fileURL  = imagesDirectory.appendingPathComponent(filename)
                 if let pngData = image.pngData() {
                     try? pngData.write(to: fileURL)
                 }
-                indexEntries.append([
-                    "type": "image",
-                    "filename": filename,
-                    "date": ISO8601DateFormatter().string(from: item.date)
-                ])
+                entry["type"]     = "image"
+                entry["filename"] = filename
             }
+            // Optional fields: only written when set, for forward/backward compat.
+            if let desc = item.description, !desc.isEmpty {
+                entry["description"] = desc
+            }
+            if item.isHidden {
+                entry["hidden"] = "1"
+            }
+            indexEntries.append(entry)
         }
 
         if let data = try? JSONEncoder().encode(indexEntries) {
@@ -237,16 +282,29 @@ class ClipboardManager: ObservableObject {
                   let date = formatter.date(from: dateStr)
             else { continue }
 
+            let description = entry["description"]
+            let isHidden    = entry["hidden"] == "1"
+
             switch type {
             case "text":
                 if let text = entry["value"] {
-                    loaded.append(ClipboardItem(content: .text(text), date: date))
+                    loaded.append(ClipboardItem(
+                        content: .text(text),
+                        date: date,
+                        description: description,
+                        isHidden: isHidden
+                    ))
                 }
             case "image":
                 if let filename = entry["filename"] {
                     let fileURL = imagesDirectory.appendingPathComponent(filename)
                     if let image = NSImage(contentsOf: fileURL) {
-                        loaded.append(ClipboardItem(content: .image(image), date: date))
+                        loaded.append(ClipboardItem(
+                            content: .image(image),
+                            date: date,
+                            description: description,
+                            isHidden: isHidden
+                        ))
                     }
                 }
             default:

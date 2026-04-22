@@ -46,6 +46,29 @@ struct PopupView: View {
     /// Whether the popup follows the cursor or stays at its last position.
     @State private var followCursor: Bool = PopupWindow.shared.followCursor
 
+    /// When true, the settings slide-over is shown instead of the history list.
+    @State private var showingSettings: Bool = false
+
+    /// When true, the next keyDown captured by the panel is recorded as the
+    /// new global shortcut instead of being used for navigation.
+    @State private var isRecording: Bool = false
+
+    /// The current global shortcut. Mirrors `HotkeyManager.shared.currentShortcut`
+    /// so the UI updates immediately when recording finishes.
+    @State private var shortcut: Shortcut = HotkeyManager.shared.currentShortcut
+
+    /// Maximum number of history items. Persisted in UserDefaults and read by
+    /// ClipboardManager; stored here so Settings can bind to it and Reset can
+    /// restore the default without re-reading UserDefaults.
+    @State private var historyLimit: Int = {
+        let v = UserDefaults.standard.integer(forKey: ClipboardManager.historyLimitKey)
+        return v > 0 ? v : ClipboardManager.historyLimitDefault
+    }()
+
+    /// Whether the menu-bar status icon is visible. Mirrors
+    /// `StatusBarController.isEnabled` so the Settings toggle updates live.
+    @State private var showInMenuBar: Bool = StatusBarController.isEnabled
+
 
     // MARK: - Callbacks
 
@@ -58,6 +81,79 @@ struct PopupView: View {
     // MARK: - Body
 
     var body: some View {
+        ZStack {
+            if showingSettings {
+                SettingsView(
+                    shortcut:      $shortcut,
+                    followCursor:  $followCursor,
+                    isRecording:   $isRecording,
+                    historyLimit:  $historyLimit,
+                    showInMenuBar: $showInMenuBar,
+                    onBack: {
+                        if isRecording {
+                            isRecording = false
+                            HotkeyManager.shared.isRecording = false
+                        }
+                        withAnimation(.easeInOut(duration: 0.22)) {
+                            showingSettings = false
+                        }
+                    },
+                    onReset: {
+                        shortcut = .default
+                        HotkeyManager.shared.currentShortcut = .default
+                        followCursor = false
+                        PopupWindow.shared.followCursor = false
+                        historyLimit = ClipboardManager.historyLimitDefault
+                        UserDefaults.standard.set(
+                            ClipboardManager.historyLimitDefault,
+                            forKey: ClipboardManager.historyLimitKey
+                        )
+                        ClipboardManager.shared.applyHistoryLimit()
+                        showInMenuBar = StatusBarController.showInMenuBarDefault
+                        StatusBarController.shared.setVisible(
+                            StatusBarController.showInMenuBarDefault
+                        )
+                    }
+                )
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            } else {
+                mainView
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+        }
+        .frame(width: 340)
+        .frame(minHeight: 60, maxHeight: 380)
+        // `.regularMaterial` gives the frosted-glass look that automatically
+        // adapts to the user's light/dark mode setting.
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.primary.opacity(0.1), lineWidth: 1)
+        )
+        // Shadow is applied here in SwiftUI (NSPanel has hasShadow = false)
+        // so it correctly follows the rounded corners.
+        .shadow(color: .black.opacity(0.25), radius: 16, x: 0, y: 6)
+
+        // ── Keyboard event handler ────────────────────────────────────────
+        // `PopupWindow.KeyablePanel` intercepts key events and posts them here
+        // via NotificationCenter because SwiftUI can't directly receive keyboard
+        // input from a non-activating window.
+        .onReceive(NotificationCenter.default.publisher(for: .clipBoxKeyDown)) { notification in
+            guard let keyCode = notification.userInfo?["keyCode"] as? UInt16 else { return }
+            let flagsRaw = notification.userInfo?["flags"] as? UInt ?? 0
+            let chars    = notification.userInfo?["chars"] as? String ?? ""
+            handleKey(
+                keyCode: keyCode,
+                flags:   NSEvent.ModifierFlags(rawValue: flagsRaw),
+                chars:   chars
+            )
+        }
+    }
+
+    // MARK: - Main (history/pinned) view
+
+    private var mainView: some View {
         VStack(spacing: 0) {
 
             // ── Header ────────────────────────────────────────────────────
@@ -74,22 +170,6 @@ struct PopupView: View {
 
                 Spacer()
 
-                // ── Follow Cursor toggle ─────────────────────────────────
-                Button(action: {
-                    followCursor.toggle()
-                    PopupWindow.shared.followCursor = followCursor
-                }) {
-                    Label("Follow", systemImage: "cursorarrow.motionlines")
-                        .font(.system(size: 11))
-                        .foregroundColor(followCursor ? .accentColor : .secondary)
-                }
-                .buttonStyle(.plain)
-                .help(followCursor ? "Follow Cursor: On" : "Follow Cursor: Off")
-
-                Divider()
-                    .frame(height: 12)
-                    .padding(.horizontal, 2)
-
                 // ── Clear All button ─────────────────────────────────────
                 Button(action: {
                     triggerClearWithAnimation()
@@ -105,6 +185,23 @@ struct PopupView: View {
                     .frame(height: 12)
                     .padding(.horizontal, 2)
 
+                // ── Settings ─────────────────────────────────────────────
+                Button(action: {
+                    shortcut = HotkeyManager.shared.currentShortcut
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        showingSettings = true
+                    }
+                }) {
+                    Text("Settings")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+
+                Divider()
+                    .frame(height: 12)
+                    .padding(.horizontal, 2)
+
                 // ── Quit button ───────────────────────────────────────────
                 Button(action: {
                     NSApplication.shared.terminate(nil)
@@ -114,6 +211,7 @@ struct PopupView: View {
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
+                .help("Settings")
             }
             .padding(.horizontal, 12)
             .padding(.top, 10)
@@ -155,21 +253,42 @@ struct PopupView: View {
                     ScrollView(.vertical, showsIndicators: false) {
                         LazyVStack(spacing: 2) {
                             ForEach(Array(currentItems.enumerated()), id: \.element.id) { index, item in
+                                // For history rows, look up an existing pinned
+                                // copy so the row can show an accent-tinted pin
+                                // icon and offer an Unpin action instead of a
+                                // silently-failing re-pin.
+                                let existingPin: ClipboardItem? = selectedTab == .history
+                                    ? clipboardManager.existingPin(for: item)
+                                    : nil
+
+                                let unpinAction: (() -> Void)? = {
+                                    if selectedTab == .pinned {
+                                        return { clipboardManager.unpinItem(item) }
+                                    }
+                                    if let pinned = existingPin {
+                                        return { clipboardManager.unpinItem(pinned) }
+                                    }
+                                    return nil
+                                }()
+
                                 ClipboardRowView(
-                                    item: item,
-                                    index: index,
+                                    item:      item,
+                                    index:     index,
                                     isSelected: index == selectedIndex,
-                                    isPinned: selectedTab == .pinned,
-                                    onSelect: {
-                                        onPaste(item)
-                                    },
-                                    onTogglePin: {
-                                        if selectedTab == .history {
-                                            clipboardManager.pinItem(item)
-                                        } else {
-                                            clipboardManager.unpinItem(item)
-                                        }
-                                    },
+                                    isPinned:  selectedTab == .pinned,
+                                    onSelect:  { onPaste(item) },
+                                    // History: show Public/Private popover on pin tap,
+                                    //          or "Already pinned — Unpin" if matched.
+                                    // Pinned:  no onPin, direct unpin button instead.
+                                    onPin: selectedTab == .history ? { description, isHidden in
+                                        clipboardManager.pinItem(
+                                            item,
+                                            description: description,
+                                            isHidden: isHidden
+                                        )
+                                    } : nil,
+                                    onUnpin: unpinAction,
+                                    existingPin: existingPin,
                                     onDelete: selectedTab == .history ? {
                                         clipboardManager.deleteHistoryItem(item)
                                     } : nil
@@ -208,28 +327,6 @@ struct PopupView: View {
                 .padding(.vertical, 6)
             }
         }
-        .frame(width: 340)
-        .frame(minHeight: 60, maxHeight: 380)
-        // `.regularMaterial` gives the frosted-glass look that automatically
-        // adapts to the user's light/dark mode setting.
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.primary.opacity(0.1), lineWidth: 1)
-        )
-        // Shadow is applied here in SwiftUI (NSPanel has hasShadow = false)
-        // so it correctly follows the rounded corners.
-        .shadow(color: .black.opacity(0.25), radius: 16, x: 0, y: 6)
-
-        // ── Keyboard event handler ────────────────────────────────────────
-        // `PopupWindow.KeyablePanel` intercepts key events and posts them here
-        // via NotificationCenter because SwiftUI can't directly receive keyboard
-        // input from a non-activating window.
-        .onReceive(NotificationCenter.default.publisher(for: .clipBoxKeyDown)) { notification in
-            guard let keyCode = notification.userInfo?["keyCode"] as? UInt16 else { return }
-            handleKey(keyCode: keyCode)
-        }
     }
 
     // MARK: - Computed Properties
@@ -258,15 +355,19 @@ struct PopupView: View {
         let itemCount = currentItems.count
         let totalDelay = 0.25 + Double(itemCount) * 0.04 + 0.1
 
+        // Capture the tab NOW so a mid-animation tab switch can't redirect
+        // the clear to the wrong list (e.g. starting on History, switching to
+        // Pinned before the ~600 ms animation finishes → pinned would be wiped).
+        let tabToClean = selectedTab
+
         DispatchQueue.main.asyncAfter(deadline: .now() + totalDelay) {
-            
-            if self.selectedTab == .history {
+            if tabToClean == .history {
                 ClipboardManager.shared.clearHistory()
             } else {
                 ClipboardManager.shared.clearPinnedItems()
             }
+            self.isClearing = false
         }
-        self.isClearing = false
     }
 
     // MARK: - Keyboard Handling
@@ -282,18 +383,51 @@ struct PopupView: View {
     ///
     /// Important: Escape (53) is handled BEFORE the `count > 0` guard so it
     /// always works, even when the history list is empty.
-    private func handleKey(keyCode: UInt16) {
-        // Escape is always handled — regardless of whether history is empty.
-        // Previously this was inside the `guard count > 0` block, which meant
-        // Escape did nothing when the list was empty. Fixed by checking it first.
+    private func handleKey(keyCode: UInt16, flags: NSEvent.ModifierFlags, chars: String) {
+        // ── Recording mode ────────────────────────────────────────────────
+        // Capture whatever combo the user presses as the new global shortcut.
+        if isRecording {
+            handleRecordingKey(keyCode: keyCode, flags: flags, chars: chars)
+            return
+        }
+
+        // ── Escape ────────────────────────────────────────────────────────
+        // In settings: go back. In list: close popup. Always handled first so
+        // it works even when the list is empty.
         if keyCode == 53 {
-            onClose()
+            if showingSettings {
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    showingSettings = false
+                }
+            } else {
+                onClose()
+            }
+            return
+        }
+
+        // While Settings is visible, ignore navigation keys — they'd move an
+        // invisible selection in the hidden list.
+        if showingSettings { return }
+
+        // ── Tab switching (← →) ───────────────────────────────────────────
+        // Handled before the count guard so it works even on an empty tab.
+        if keyCode == 123 { // Arrow Left → History
+            selectedTab = .history
+            return
+        }
+        if keyCode == 124 { // Arrow Right → Pinned
+            selectedTab = .pinned
             return
         }
 
         let items = currentItems
         let count = items.count
         guard count > 0 else { return }
+
+        // Clamp selectedIndex in case items were removed (delete/unpin) while
+        // the selection was pointing to the last row — otherwise pressing Enter
+        // right after a delete would index out of bounds and crash.
+        if selectedIndex >= count { selectedIndex = count - 1 }
 
         switch keyCode {
         case 125: // Arrow Down
@@ -307,6 +441,85 @@ struct PopupView: View {
 
         default:
             break
+        }
+    }
+
+    // MARK: - Recording
+
+    /// Consumes the next keypress during shortcut recording. Escape cancels,
+    /// modifier-only presses are ignored, and combinations without any modifier
+    /// are rejected (pressing plain "V" would otherwise hijack normal typing).
+    private func handleRecordingKey(keyCode: UInt16, flags: NSEvent.ModifierFlags, chars: String) {
+        // Escape cancels recording without saving.
+        if keyCode == 53 {
+            isRecording = false
+            HotkeyManager.shared.isRecording = false
+            return
+        }
+
+        // Build label. Prefer a known-key mapping first (arrows, F-keys, etc.)
+        // because charactersIgnoringModifiers returns private-use unicode for
+        // those keys. Fall back to the character only if it's printable ASCII.
+        let label: String
+        if let known = specialKeyName(for: keyCode) {
+            label = known
+        } else {
+            let trimmed = chars.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let scalar = trimmed.unicodeScalars.first,
+               scalar.value >= 0x20 && scalar.value < 0x7F {
+                label = trimmed.uppercased()
+            } else {
+                label = "Key \(keyCode)"
+            }
+        }
+
+        let new = Shortcut(
+            command: flags.contains(.command),
+            shift:   flags.contains(.shift),
+            option:  flags.contains(.option),
+            control: flags.contains(.control),
+            keyCode: keyCode,
+            keyLabel: label
+        )
+
+        // Require at least one modifier — otherwise the user would block their
+        // own typing (e.g. pressing a plain letter would trigger the popup).
+        guard new.hasModifier else {
+            // Stay in recording mode so they can try again.
+            return
+        }
+
+        shortcut = new
+        HotkeyManager.shared.currentShortcut = new
+        isRecording = false
+        HotkeyManager.shared.isRecording = false
+    }
+
+    /// Human-readable labels for common non-character keys (arrows, F-keys, etc.).
+    private func specialKeyName(for keyCode: UInt16) -> String? {
+        switch keyCode {
+        case 36:  return "↩"
+        case 48:  return "⇥"
+        case 49:  return "Space"
+        case 51:  return "⌫"
+        case 117: return "⌦"
+        case 123: return "←"
+        case 124: return "→"
+        case 125: return "↓"
+        case 126: return "↑"
+        case 122: return "F1"
+        case 120: return "F2"
+        case 99:  return "F3"
+        case 118: return "F4"
+        case 96:  return "F5"
+        case 97:  return "F6"
+        case 98:  return "F7"
+        case 100: return "F8"
+        case 101: return "F9"
+        case 109: return "F10"
+        case 103: return "F11"
+        case 111: return "F12"
+        default:  return nil
         }
     }
 }
