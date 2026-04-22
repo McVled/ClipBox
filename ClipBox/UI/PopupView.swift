@@ -174,9 +174,13 @@ struct PopupView: View {
                 Button(action: {
                     triggerClearWithAnimation()
                 }) {
-                    Text("Clear All")
-                        .font(.system(size: 11))
-                        .foregroundColor(currentItems.isEmpty ? .secondary.opacity(0.35) : .secondary)
+                    HStack(spacing: 3) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 10))
+                        Text("Clear")
+                            .font(.system(size: 11))
+                    }
+                    .foregroundColor(currentItems.isEmpty ? .secondary.opacity(0.35) : .secondary)
                 }
                 .buttonStyle(.plain)
                 .disabled(currentItems.isEmpty || isClearing)
@@ -192,9 +196,13 @@ struct PopupView: View {
                         showingSettings = true
                     }
                 }) {
-                    Text("Settings")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
+                    HStack(spacing: 3) {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 10))
+                        Text("Settings")
+                            .font(.system(size: 11))
+                    }
+                    .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
 
@@ -206,12 +214,15 @@ struct PopupView: View {
                 Button(action: {
                     NSApplication.shared.terminate(nil)
                 }) {
-                    Text("Quit App")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
+                    HStack(spacing: 3) {
+                        Image(systemName: "power")
+                            .font(.system(size: 10))
+                        Text("Quit")
+                            .font(.system(size: 11))
+                    }
+                    .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Settings")
             }
             .padding(.horizontal, 12)
             .padding(.top, 10)

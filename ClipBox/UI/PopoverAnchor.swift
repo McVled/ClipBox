@@ -62,6 +62,10 @@ struct PopoverAnchor<Content: View>: NSViewRepresentable {
             popover.delegate = self
         }
 
+        deinit {
+            popover.delegate = nil
+        }
+
         func show(edge: NSRectEdge) {
             let vc = NSHostingController(rootView: latestContent())
             popover.contentViewController = vc

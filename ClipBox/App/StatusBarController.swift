@@ -20,7 +20,7 @@ final class StatusBarController {
     // MARK: - UserDefaults
 
     static let showInMenuBarKey     = "com.clipbox.showInMenuBar"
-    static let showInMenuBarDefault = true
+    static let showInMenuBarDefault = false
 
     /// Current persisted preference. Reads `true` when unset so first-time
     /// users discover the icon.

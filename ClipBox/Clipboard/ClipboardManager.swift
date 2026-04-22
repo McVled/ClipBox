@@ -346,20 +346,16 @@ class ClipboardManager: ObservableObject {
     }
 
     func clearHistory() {
-        DispatchQueue.main.async {
-            self.history.removeAll()
-            self.saveHistory()
-            NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
-        }
+        history.removeAll()
+        saveHistory()
+        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
     }
 
     func clearPinnedItems() {
-        DispatchQueue.main.async {
-            self.pinnedItems.removeAll()
-            self.savePinnedItems()
-            self.pruneOrphanedImageFiles()
-            NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
-        }
+        pinnedItems.removeAll()
+        savePinnedItems()
+        pruneOrphanedImageFiles()
+        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
     }
 
     private func checkPasteboard() {
