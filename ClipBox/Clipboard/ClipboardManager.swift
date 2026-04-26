@@ -65,7 +65,7 @@ class ClipboardManager: ObservableObject {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
-        ).first!
+        ).first ?? FileManager.default.temporaryDirectory
         let dir = appSupport.appendingPathComponent("ClipBox/images", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir

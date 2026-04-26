@@ -169,20 +169,44 @@ struct ClipboardRowView: View {
                 .foregroundColor(isSelected ? .white.opacity(0.85) : .secondary)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(item.description?.isEmpty == false ? item.description! : "Private")
+                Text(item.description?.isEmpty == false ? item.description! : (item.image != nil ? "Private Image" : "Private"))
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(isSelected ? .white : .primary)
                     .lineLimit(1)
 
-                Text(isRevealed ? (item.text ?? "") : "••••••••••")
-                    .font(.system(
-                        size: 11,
-                        design: isRevealed ? .default : .monospaced
-                    ))
-                    .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .animation(.easeInOut(duration: 0.1), value: isRevealed)
+                if let image = item.image {
+                    if isRevealed {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 44, height: 36)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
+                            )
+                            .animation(.easeInOut(duration: 0.1), value: isRevealed)
+                    } else {
+                        HStack(spacing: 4) {
+                            Image(systemName: "photo")
+                                .font(.system(size: 10))
+                            Text("\(Int(image.size.width)) × \(Int(image.size.height))")
+                                .font(.system(size: 11))
+                        }
+                        .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
+                        .animation(.easeInOut(duration: 0.1), value: isRevealed)
+                    }
+                } else {
+                    Text(isRevealed ? (item.text ?? "") : "••••••••••")
+                        .font(.system(
+                            size: 11,
+                            design: isRevealed ? .default : .monospaced
+                        ))
+                        .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .animation(.easeInOut(duration: 0.1), value: isRevealed)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
