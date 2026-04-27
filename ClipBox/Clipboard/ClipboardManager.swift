@@ -6,20 +6,6 @@
 import Cocoa
 import Combine
 
-/// Monitors the clipboard, stores history (text + images), and handles paste.
-///
-/// ## Image handling
-/// Images are resized to max 1024px before being stored in memory and saved
-/// to disk. This keeps memory usage low while preserving enough quality for
-/// most use cases. Images are saved as PNG files in Application Support
-/// (not UserDefaults, which has a size limit unsuitable for image data).
-/// Text items continue to be saved in UserDefaults as JSON.
-///
-/// ## Persistence
-/// - Text history  → UserDefaults (JSON array)
-/// - Image history → ~/Library/Application Support/ClipBox/images/ (PNG files)
-/// - A single index file (JSON) in Application Support ties everything together
-///   and preserves order and timestamps across restarts.
 class ClipboardManager: ObservableObject {
 
     // MARK: - Singleton
@@ -28,24 +14,21 @@ class ClipboardManager: ObservableObject {
 
     // MARK: - Published State
 
-    @Published var history: [ClipboardItem] = []
-    @Published var pinnedItems: [ClipboardItem] = []
+    @Published var history:      [ClipboardItem] = []
+    @Published var pinnedItems:  [ClipboardItem] = []
+    @Published var tags:         [ClipBoxTag]    = []
 
     // MARK: - Private Properties
 
-    /// UserDefaults key and default value for the history size limit.
     static let historyLimitKey     = "com.clipbox.historyLimit"
     static let historyLimitDefault = 15
+    private static let tagsKey     = "com.clipbox.tags"
 
-    /// Maximum items in history (text + images combined). Reads from UserDefaults
-    /// so changes in Settings take effect without restarting the app.
     var maxItems: Int {
         let v = UserDefaults.standard.integer(forKey: Self.historyLimitKey)
         return v > 0 ? v : Self.historyLimitDefault
     }
 
-    /// Trims history to the current limit and saves. Called after the user
-    /// changes the History Size setting.
     func applyHistoryLimit() {
         let limit = maxItems
         guard history.count > limit else { return }
@@ -54,13 +37,11 @@ class ClipboardManager: ObservableObject {
         NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
     }
 
-    /// Maximum pixel size (longest edge) for stored images.
     private let maxImageDimension: CGFloat = 1024
 
     private var timer: Timer?
     private var lastChangeCount: Int = NSPasteboard.general.changeCount
 
-    /// Folder where image PNG files are stored on disk.
     private lazy var imagesDirectory: URL = {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
@@ -71,49 +52,99 @@ class ClipboardManager: ObservableObject {
         return dir
     }()
 
-    /// UserDefaults key for the history index (order + metadata).
-    private let indexKey = "com.clipbox.historyIndex"
-
-    /// UserDefaults key for pinned items.
+    private let indexKey       = "com.clipbox.historyIndex"
     private let pinnedIndexKey = "com.clipbox.pinnedIndex"
 
     // MARK: - Init
 
     private init() {
+        loadTags()
         loadHistory()
         loadPinnedItems()
     }
 
-    // MARK: - Persistence: Save
+    // MARK: - Tags
 
-    /// Saves the full history to disk.
-    /// Text is stored in UserDefaults; images as PNG files in Application Support.
+    /// Creates a new tag and persists it. Returns the created tag.
+    @discardableResult
+    func createTag(name: String, colorHex: String) -> ClipBoxTag {
+        let tag = ClipBoxTag(name: name, colorHex: colorHex)
+        tags.append(tag)
+        saveTags()
+        return tag
+    }
+
+    /// Assigns (or removes) a tag on a pinned item, identified by `itemID`.
+    func assignTag(_ tagID: UUID?, to itemID: UUID) {
+        guard let index = pinnedItems.firstIndex(where: { $0.id == itemID }) else { return }
+        pinnedItems[index] = pinnedItems[index].withTagID(tagID)
+        savePinnedItems()
+    }
+
+    /// Updates a tag's name and colour in-place.
+    func editTag(_ tag: ClipBoxTag, newName: String, newColorHex: String) {
+        guard let i = tags.firstIndex(where: { $0.id == tag.id }) else { return }
+        tags[i].name     = newName
+        tags[i].colorHex = newColorHex
+        saveTags()
+    }
+
+    /// Deletes a tag and unassigns it from every pinned item that had it.
+    func deleteTag(_ tag: ClipBoxTag) {
+        tags.removeAll { $0.id == tag.id }
+        for i in pinnedItems.indices where pinnedItems[i].tagID == tag.id {
+            pinnedItems[i] = pinnedItems[i].withTagID(nil)
+        }
+        saveTags()
+        savePinnedItems()
+    }
+
+    /// Removes every tag that has no pinned items. Called after any operation
+    /// that can reduce a tag's item count to zero.
+    private func pruneEmptyTags() {
+        let usedIDs = Set(pinnedItems.compactMap { $0.tagID })
+        let before  = tags.count
+        tags.removeAll { !usedIDs.contains($0.id) }
+        if tags.count != before { saveTags() }
+    }
+
+    private func saveTags() {
+        if let data = try? JSONEncoder().encode(tags) {
+            UserDefaults.standard.set(data, forKey: Self.tagsKey)
+        }
+    }
+
+    private func loadTags() {
+        guard let data = UserDefaults.standard.data(forKey: Self.tagsKey),
+              let decoded = try? JSONDecoder().decode([ClipBoxTag].self, from: data)
+        else { return }
+        tags = decoded
+    }
+
+    // MARK: - Persistence: Save History
+
     private func saveHistory() {
         var indexEntries: [[String: String]] = []
 
         for item in history {
             switch item.content {
             case .text(let text):
-                // Text entries are stored inline in the index.
                 indexEntries.append([
-                    "type": "text",
+                    "type":  "text",
                     "value": text,
-                    "date": ISO8601DateFormatter().string(from: item.date)
+                    "date":  ISO8601DateFormatter().string(from: item.date)
                 ])
 
             case .image(let image):
-                // Images are saved as PNG files named by their item ID.
                 let filename = "\(item.id).png"
                 let fileURL  = imagesDirectory.appendingPathComponent(filename)
-
                 if let pngData = image.pngData() {
                     try? pngData.write(to: fileURL)
                 }
-
                 indexEntries.append([
-                    "type": "image",
+                    "type":     "image",
                     "filename": filename,
-                    "date": ISO8601DateFormatter().string(from: item.date)
+                    "date":     ISO8601DateFormatter().string(from: item.date)
                 ])
             }
         }
@@ -122,11 +153,9 @@ class ClipboardManager: ObservableObject {
             UserDefaults.standard.set(data, forKey: indexKey)
         }
 
-        // Clean up any orphaned image files not referenced by current history.
         pruneOrphanedImageFiles()
     }
 
-    /// Removes PNG files from disk that are no longer in the history or pinned index.
     private func pruneOrphanedImageFiles() {
         let historyFilenames = history.compactMap { item -> String? in
             guard case .image = item.content else { return nil }
@@ -149,9 +178,8 @@ class ClipboardManager: ObservableObject {
         }
     }
 
-    // MARK: - Persistence: Load
+    // MARK: - Persistence: Load History
 
-    /// Restores history from disk on launch.
     private func loadHistory() {
         guard let data = UserDefaults.standard.data(forKey: indexKey),
               let entries = try? JSONDecoder().decode([[String: String]].self, from: data)
@@ -161,9 +189,9 @@ class ClipboardManager: ObservableObject {
         var loaded: [ClipboardItem] = []
 
         for entry in entries {
-            guard let type = entry["type"],
+            guard let type    = entry["type"],
                   let dateStr = entry["date"],
-                  let date = formatter.date(from: dateStr)
+                  let date    = formatter.date(from: dateStr)
             else { continue }
 
             switch type {
@@ -171,7 +199,6 @@ class ClipboardManager: ObservableObject {
                 if let text = entry["value"] {
                     loaded.append(ClipboardItem(content: .text(text), date: date))
                 }
-
             case "image":
                 if let filename = entry["filename"] {
                     let fileURL = imagesDirectory.appendingPathComponent(filename)
@@ -179,51 +206,35 @@ class ClipboardManager: ObservableObject {
                         loaded.append(ClipboardItem(content: .image(image), date: date))
                     }
                 }
-
             default:
                 break
             }
         }
 
-        // Honour the user's history-size setting on restore — without this, a
-        // user who lowered the limit would still see the old (larger) list
-        // until the next copy triggered `trimAndSave`.
         history = Array(loaded.prefix(maxItems))
-        if loaded.count > maxItems {
-            saveHistory()
-        }
+        if loaded.count > maxItems { saveHistory() }
     }
 
     // MARK: - Pinned Items
 
-    /// Returns the existing pinned item matching the given item's dedup key, or nil.
-    /// Used by history rows so they can show an "already pinned" indicator and
-    /// offer an Unpin action instead of silently failing a re-pin.
     func existingPin(for item: ClipboardItem) -> ClipboardItem? {
         pinnedItems.first(where: { $0.deduplicationKey == item.deduplicationKey })
     }
 
-    /// Pins a clipboard item. Copies it to the pinned list (history stays unchanged).
-    ///
-    /// `description` and `isHidden` are optional — pass them to pin an item as
-    /// "sensitive" (e.g. a password), which renders as bullets + a user label
-    /// in the list but still pastes the real content.
-    func pinItem(_ item: ClipboardItem, description: String? = nil, isHidden: Bool = false) {
-        // Avoid duplicates in pinned
+    func pinItem(_ item: ClipboardItem, description: String? = nil, isHidden: Bool = false, tagID: UUID? = nil) {
         guard !pinnedItems.contains(where: { $0.deduplicationKey == item.deduplicationKey }) else { return }
-        // Create a fresh copy so pinned item has its own identity.
         let pinned = ClipboardItem(
             content:     item.content,
             date:        item.date,
             description: description,
-            isHidden:    isHidden
+            isHidden:    isHidden,
+            tagID:       tagID
         )
         pinnedItems.insert(pinned, at: 0)
         savePinnedItems()
         NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
     }
 
-    /// Unpins a clipboard item. Removes it from the pinned list only.
     func unpinItem(_ item: ClipboardItem) {
         pinnedItems.removeAll { $0.id == item.id }
         savePinnedItems()
@@ -231,7 +242,16 @@ class ClipboardManager: ObservableObject {
         NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
     }
 
-    /// Saves pinned items to disk (same format as history).
+    /// Moves a pinned item from one index to another within `pinnedItems`.
+    func movePinnedItem(fromIndex source: Int, toIndex destination: Int) {
+        guard source != destination,
+              pinnedItems.indices.contains(source) else { return }
+        let item     = pinnedItems.remove(at: source)
+        let adjusted = destination > source ? destination - 1 : destination
+        pinnedItems.insert(item, at: min(adjusted, pinnedItems.count))
+        savePinnedItems()
+    }
+
     private func savePinnedItems() {
         var indexEntries: [[String: String]] = []
 
@@ -252,12 +272,14 @@ class ClipboardManager: ObservableObject {
                 entry["type"]     = "image"
                 entry["filename"] = filename
             }
-            // Optional fields: only written when set, for forward/backward compat.
             if let desc = item.description, !desc.isEmpty {
                 entry["description"] = desc
             }
             if item.isHidden {
                 entry["hidden"] = "1"
+            }
+            if let tagID = item.tagID {
+                entry["tagID"] = tagID.uuidString
             }
             indexEntries.append(entry)
         }
@@ -267,7 +289,6 @@ class ClipboardManager: ObservableObject {
         }
     }
 
-    /// Restores pinned items from disk on launch.
     private func loadPinnedItems() {
         guard let data = UserDefaults.standard.data(forKey: pinnedIndexKey),
               let entries = try? JSONDecoder().decode([[String: String]].self, from: data)
@@ -277,22 +298,24 @@ class ClipboardManager: ObservableObject {
         var loaded: [ClipboardItem] = []
 
         for entry in entries {
-            guard let type = entry["type"],
+            guard let type    = entry["type"],
                   let dateStr = entry["date"],
-                  let date = formatter.date(from: dateStr)
+                  let date    = formatter.date(from: dateStr)
             else { continue }
 
             let description = entry["description"]
             let isHidden    = entry["hidden"] == "1"
+            let tagID       = entry["tagID"].flatMap { UUID(uuidString: $0) }
 
             switch type {
             case "text":
                 if let text = entry["value"] {
                     loaded.append(ClipboardItem(
-                        content: .text(text),
-                        date: date,
+                        content:     .text(text),
+                        date:        date,
                         description: description,
-                        isHidden: isHidden
+                        isHidden:    isHidden,
+                        tagID:       tagID
                     ))
                 }
             case "image":
@@ -300,10 +323,11 @@ class ClipboardManager: ObservableObject {
                     let fileURL = imagesDirectory.appendingPathComponent(filename)
                     if let image = NSImage(contentsOf: fileURL) {
                         loaded.append(ClipboardItem(
-                            content: .image(image),
-                            date: date,
+                            content:     .image(image),
+                            date:        date,
                             description: description,
-                            isHidden: isHidden
+                            isHidden:    isHidden,
+                            tagID:       tagID
                         ))
                     }
                 }
@@ -330,14 +354,12 @@ class ClipboardManager: ObservableObject {
         timer = nil
     }
 
-    /// Deletes a single item from history.
     func deleteHistoryItem(_ item: ClipboardItem) {
         history.removeAll { $0.id == item.id }
         saveHistory()
         NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
     }
 
-    /// Deletes a single item from pinned.
     func deletePinnedItem(_ item: ClipboardItem) {
         pinnedItems.removeAll { $0.id == item.id }
         savePinnedItems()
@@ -353,6 +375,16 @@ class ClipboardManager: ObservableObject {
 
     func clearPinnedItems() {
         pinnedItems.removeAll()
+        tags.removeAll()
+        saveTags()
+        savePinnedItems()
+        pruneOrphanedImageFiles()
+        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
+    }
+
+    /// Removes all pinned items that belong to the given tag (keeps the tag itself).
+    func clearPinnedItems(withTagID tagID: UUID) {
+        pinnedItems.removeAll { $0.tagID == tagID }
         savePinnedItems()
         pruneOrphanedImageFiles()
         NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
@@ -363,9 +395,6 @@ class ClipboardManager: ObservableObject {
         guard pb.changeCount != lastChangeCount else { return }
         lastChangeCount = pb.changeCount
 
-        // ── Try image first ───────────────────────────────────────────────
-        // Check for image types before text, since some apps (e.g. Finder)
-        // write both an image and a filename string; we want the image.
         if let image = pb.readImage() {
             let resized = image.resized(toMaxDimension: maxImageDimension)
             let key = ClipboardItem(image: resized).deduplicationKey
@@ -381,7 +410,6 @@ class ClipboardManager: ObservableObject {
             return
         }
 
-        // ── Fall back to text ─────────────────────────────────────────────
         guard let text = pb.string(forType: .string), !text.isEmpty else { return }
         if history.first?.text == text { return }
 
@@ -393,7 +421,6 @@ class ClipboardManager: ObservableObject {
         }
     }
 
-    /// Trims history to `maxItems` and persists to disk.
     private func trimAndSave() {
         if history.count > maxItems {
             history = Array(history.prefix(maxItems))
@@ -404,7 +431,6 @@ class ClipboardManager: ObservableObject {
 
     // MARK: - Pasting
 
-    /// Writes the item back to the clipboard and simulates ⌘V.
     func paste(item: ClipboardItem) {
         let pb = NSPasteboard.general
         pb.clearContents()
@@ -414,7 +440,6 @@ class ClipboardManager: ObservableObject {
             pb.setString(text, forType: .string)
 
         case .image(let image):
-            // Write PNG data to clipboard — accepted by most macOS apps.
             if let data = image.pngData() {
                 pb.setData(data, forType: .png)
             }
@@ -436,9 +461,7 @@ class ClipboardManager: ObservableObject {
 // MARK: - NSPasteboard extension
 
 private extension NSPasteboard {
-    /// Returns the first image on the clipboard, or nil if none exists.
     func readImage() -> NSImage? {
-        // Check for standard image types in priority order.
         let imageTypes: [NSPasteboard.PasteboardType] = [
             .tiff, .png,
             NSPasteboard.PasteboardType("public.jpeg"),
@@ -456,36 +479,30 @@ private extension NSPasteboard {
 // MARK: - NSImage extensions
 
 extension NSImage {
-    /// Resizes the image so its longest edge is at most `maxDimension` pixels.
-    /// If the image is already smaller, it's returned unchanged.
     func resized(toMaxDimension maxDimension: CGFloat) -> NSImage {
         let originalSize = self.size
         let longestEdge  = max(originalSize.width, originalSize.height)
-
-        // No resize needed if already within the limit.
         guard longestEdge > maxDimension else { return self }
 
-        let scale      = maxDimension / longestEdge
-        let newSize    = NSSize(
+        let scale   = maxDimension / longestEdge
+        let newSize = NSSize(
             width:  (originalSize.width  * scale).rounded(),
             height: (originalSize.height * scale).rounded()
         )
 
-        // Draw the original image into a new bitmap at the reduced size.
         let newImage = NSImage(size: newSize)
         newImage.lockFocus()
         NSGraphicsContext.current?.imageInterpolation = .high
         draw(
-            in: NSRect(origin: .zero, size: newSize),
-            from: NSRect(origin: .zero, size: originalSize),
+            in:        NSRect(origin: .zero, size: newSize),
+            from:      NSRect(origin: .zero, size: originalSize),
             operation: .copy,
-            fraction: 1.0
+            fraction:  1.0
         )
         newImage.unlockFocus()
         return newImage
     }
 
-    /// Converts the image to PNG `Data`, suitable for saving to disk or clipboard.
     func pngData() -> Data? {
         guard let tiffData = tiffRepresentation,
               let bitmap   = NSBitmapImageRep(data: tiffData)
