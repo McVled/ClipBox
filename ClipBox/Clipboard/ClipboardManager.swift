@@ -89,7 +89,7 @@ class ClipboardManager: ObservableObject {
         saveTags()
     }
 
-    /// Deletes a tag and unassigns it from every pinned item that had it.
+    /// Deletes a tag and moves its items to untagged.
     func deleteTag(_ tag: ClipBoxTag) {
         tags.removeAll { $0.id == tag.id }
         for i in pinnedItems.indices where pinnedItems[i].tagID == tag.id {
@@ -97,6 +97,16 @@ class ClipboardManager: ObservableObject {
         }
         saveTags()
         savePinnedItems()
+    }
+
+    /// Deletes a tag and removes all pinned items that belonged to it.
+    func deleteTagAndItems(_ tag: ClipBoxTag) {
+        tags.removeAll { $0.id == tag.id }
+        pinnedItems.removeAll { $0.tagID == tag.id }
+        saveTags()
+        savePinnedItems()
+        pruneOrphanedImageFiles()
+        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
     }
 
     /// Removes every tag that has no pinned items. Called after any operation
@@ -232,6 +242,8 @@ class ClipboardManager: ObservableObject {
         )
         pinnedItems.insert(pinned, at: 0)
         savePinnedItems()
+        history.removeAll { $0.deduplicationKey == item.deduplicationKey }
+        saveHistory()
         NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
     }
 

@@ -152,9 +152,9 @@ struct ClipboardRowView: View {
 
             } else if let onUnpin {
                 Button(action: onUnpin) {
-                    Image(systemName: "pin.slash.fill")
-                        .font(.system(size: 12))
-                        .foregroundColor(isSelected ? .white.opacity(0.75) : .secondary.opacity(0.75))
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(isSelected ? .white.opacity(0.7) : .secondary.opacity(0.55))
                         .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
                 }

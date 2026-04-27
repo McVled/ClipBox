@@ -20,7 +20,8 @@ struct PopupView: View {
 
     @State private var selectedTab:     Tab      = .history
     @State private var selectedIndex:   Int      = 0
-    @State private var isClearing:      Bool     = false
+    @State private var isClearing:           Bool     = false
+    @State private var showingClearConfirm:  Bool     = false
     @State private var followCursor:    Bool     = PopupWindow.shared.followCursor
     @State private var showingSettings: Bool     = false
     @State private var isRecording:     Bool     = false
@@ -124,7 +125,7 @@ struct PopupView: View {
 
                 Spacer()
 
-                Button(action: triggerClearWithAnimation) {
+                Button(action: { showingClearConfirm = true }) {
                     HStack(spacing: 3) {
                         Image(systemName: "trash").font(.system(size: 10))
                         Text("Clear").font(.system(size: 11))
@@ -212,6 +213,20 @@ struct PopupView: View {
                 .padding(.vertical, 6)
             }
         }
+        .alert(clearConfirmTitle, isPresented: $showingClearConfirm) {
+            Button("Clear", role: .destructive, action: triggerClearWithAnimation)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This action cannot be undone.")
+        }
+    }
+
+    private var clearConfirmTitle: String {
+        if let tagID = activeTagID,
+           let tag = clipboardManager.tags.first(where: { $0.id == tagID }) {
+            return "Clear \"\(tag.name)\"?"
+        }
+        return selectedTab == .history ? "Clear History?" : "Clear Pinned Items?"
     }
 
     // MARK: - History list
@@ -308,6 +323,10 @@ struct PopupView: View {
                                             onDelete: {
                                                 if activeTagID == tag.id { activeTagID = nil }
                                                 clipboardManager.deleteTag(tag)
+                                            },
+                                            onDeleteWithItems: {
+                                                if activeTagID == tag.id { activeTagID = nil }
+                                                clipboardManager.deleteTagAndItems(tag)
                                             }
                                         )
                                         .id(tag.id)
@@ -597,6 +616,8 @@ struct PopupView: View {
         // ↓ Arrow
         if keyCode == 125 {
             if inTagNav {
+                let hasUntagged = clipboardManager.pinnedItems.contains { $0.tagID == nil }
+                guard hasUntagged else { return }
                 selectedTagIndex = nil
                 selectedIndex    = 0
             } else {
@@ -695,14 +716,16 @@ struct PopupView: View {
 
 private struct TagFlagButton: View {
 
-    let tag:        ClipBoxTag
-    let count:      Int
-    let isSelected: Bool
-    let onTap:      () -> Void
-    let onEdit:     (String, String) -> Void   // newName, newColorHex
-    let onDelete:   () -> Void
+    let tag:              ClipBoxTag
+    let count:            Int
+    let isSelected:       Bool
+    let onTap:            () -> Void
+    let onEdit:           (String, String) -> Void
+    let onDelete:         () -> Void   // move items to untagged
+    let onDeleteWithItems: () -> Void  // remove items too
 
-    @State private var showingEdit = false
+    @State private var showingEdit          = false
+    @State private var showingDeleteConfirm = false
 
     var body: some View {
         Button(action: onTap) {
@@ -747,7 +770,20 @@ private struct TagFlagButton: View {
         .contextMenu {
             Button("Edit…") { showingEdit = true }
             Divider()
-            Button("Delete Tag", role: .destructive, action: onDelete)
+            Button("Delete Tag", role: .destructive) {
+                if count == 0 {
+                    onDelete()
+                } else {
+                    showingDeleteConfirm = true
+                }
+            }
+        }
+        .alert("Delete \"\(tag.name)\"?", isPresented: $showingDeleteConfirm) {
+            Button("Move to Untagged", action: onDelete)
+            Button("Delete Items", role: .destructive, action: onDeleteWithItems)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("What should happen to the \(count) item\(count == 1 ? "" : "s") in this tag?")
         }
     }
 }
