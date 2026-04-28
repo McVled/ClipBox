@@ -4,6 +4,7 @@
 //
 
 import AppKit
+import Combine
 
 /// Manages the optional menu-bar (status bar) icon. When visible, clicking
 /// the icon toggles the popup anchored directly below it.
@@ -31,6 +32,7 @@ final class StatusBarController {
     // MARK: - Private State
 
     private var statusItem: NSStatusItem?
+    private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Init
 
@@ -52,20 +54,45 @@ final class StatusBarController {
             guard statusItem == nil else { return }
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
             if let button = item.button {
-                button.image = NSImage(
-                    systemSymbolName: "doc.on.clipboard",
-                    accessibilityDescription: "ClipBox"
-                )
-                button.image?.isTemplate = true   // Adopts dark/light menu-bar tint.
                 button.target = self
                 button.action = #selector(statusItemClicked(_:))
             }
             statusItem = item
+
+            setupIconUpdates()
         } else {
             if let item = statusItem {
                 NSStatusBar.system.removeStatusItem(item)
             }
             statusItem = nil
+            cancellables.removeAll()
+        }
+    }
+
+    private func setupIconUpdates() {
+        updateStatusIcon()
+
+        ClipboardManager.shared.$history
+            .merge(with: ClipboardManager.shared.$pinnedItems)
+            .debounce(for: 0.1, scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in
+                DispatchQueue.main.async {
+                    self?.updateStatusIcon()
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    private func updateStatusIcon() {
+        guard let button = statusItem?.button else { return }
+
+        let hasItems = !ClipboardManager.shared.history.isEmpty ||
+                       !ClipboardManager.shared.pinnedItems.isEmpty
+        let iconName = hasItems ? "doc.on.clipboard.fill" : "doc.on.clipboard"
+
+        if let image = NSImage(systemSymbolName: iconName, accessibilityDescription: "ClipBox") {
+            image.isTemplate = true
+            button.image = image
         }
     }
 
