@@ -20,8 +20,10 @@ struct PopupView: View {
 
     @State private var selectedTab:     Tab      = .history
     @State private var selectedIndex:   Int      = 0
-    @State private var isClearing:           Bool     = false
-    @State private var showingClearConfirm:  Bool     = false
+    @State private var isClearing:              Bool      = false
+    @State private var showingClearConfirm:     Bool      = false
+    @State private var showingTagDeleteConfirm: Bool      = false
+    @State private var tagPendingDelete:        ClipBoxTag? = nil
     @State private var followCursor:    Bool     = PopupWindow.shared.followCursor
     @State private var showingSettings: Bool     = false
     @State private var isRecording:     Bool     = false
@@ -177,8 +179,7 @@ struct PopupView: View {
                 selectedIndex = 0
                 activeTagID   = nil
                 if tab == .pinned {
-                    let hasUntagged = clipboardManager.pinnedItems.contains { $0.tagID == nil }
-                    selectedTagIndex = (!clipboardManager.tags.isEmpty && !hasUntagged) ? 0 : nil
+                    selectedTagIndex = clipboardManager.tags.isEmpty ? nil : 0
                 } else {
                     selectedTagIndex = nil
                 }
@@ -219,6 +220,20 @@ struct PopupView: View {
         } message: {
             Text("This action cannot be undone.")
         }
+        .alert(tagDeleteConfirmTitle, isPresented: $showingTagDeleteConfirm) {
+            Button("Move to Untagged") {
+                if let tag = tagPendingDelete { performTagDelete(tag, moveToUntagged: true) }
+            }
+            Button("Delete Items", role: .destructive) {
+                if let tag = tagPendingDelete { performTagDelete(tag, moveToUntagged: false) }
+            }
+            Button("Cancel", role: .cancel) { tagPendingDelete = nil }
+        } message: {
+            if let tag = tagPendingDelete {
+                let count = clipboardManager.pinnedItems.filter { $0.tagID == tag.id }.count
+                Text("What should happen to the \(count) item\(count == 1 ? "" : "s") in this tag?")
+            }
+        }
     }
 
     private var clearConfirmTitle: String {
@@ -227,6 +242,23 @@ struct PopupView: View {
             return "Clear \"\(tag.name)\"?"
         }
         return selectedTab == .history ? "Clear History?" : "Clear Pinned Items?"
+    }
+
+    private var tagDeleteConfirmTitle: String {
+        "Delete \"\(tagPendingDelete?.name ?? "")\"?"
+    }
+
+    private func performTagDelete(_ tag: ClipBoxTag, moveToUntagged: Bool) {
+        let currentIndex = selectedTagIndex
+        if activeTagID == tag.id { activeTagID = nil }
+        if moveToUntagged {
+            clipboardManager.deleteTag(tag)
+        } else {
+            clipboardManager.deleteTagAndItems(tag)
+        }
+        tagPendingDelete = nil
+        let newCount = clipboardManager.tags.count
+        selectedTagIndex = newCount == 0 ? nil : currentIndex.map { min($0, newCount - 1) }
     }
 
     // MARK: - History list
@@ -548,16 +580,15 @@ struct PopupView: View {
         let tags = clipboardManager.tags
         let inTagNav = selectedTab == .pinned && activeTagID == nil && selectedTagIndex != nil
 
-        // Escape: exit tag focus → back from tag view → back from settings → close popup
+        // Escape: back from tag view → back from settings → close popup
         if keyCode == 53 {
             if showingSettings {
                 withAnimation(.easeInOut(duration: 0.22)) { showingSettings = false }
-            } else if inTagNav {
-                selectedTagIndex = nil
-            } else if activeTagID != nil {
+            } else if let tagID = activeTagID {
+                let restoredIndex = clipboardManager.tags.firstIndex(where: { $0.id == tagID })
                 activeTagID      = nil
                 selectedIndex    = 0
-                selectedTagIndex = nil
+                selectedTagIndex = restoredIndex
             } else {
                 onClose()
             }
@@ -568,11 +599,8 @@ struct PopupView: View {
 
         // ← Arrow
         if keyCode == 123 {
-            if selectedTab == .pinned, activeTagID != nil {
-                activeTagID      = nil
-                selectedIndex    = 0
-                selectedTagIndex = nil
-            } else if inTagNav, let ti = selectedTagIndex, ti > 0 {
+            guard activeTagID == nil else { return }
+            if inTagNav, let ti = selectedTagIndex, ti > 0 {
                 selectedTagIndex = ti - 1
             } else if inTagNav {
                 selectedTagIndex = nil
@@ -625,6 +653,31 @@ struct PopupView: View {
                 guard items.count > 0 else { return }
                 if selectedIndex >= items.count { selectedIndex = items.count - 1 }
                 selectedIndex = min(selectedIndex + 1, items.count - 1)
+            }
+            return
+        }
+
+        // Delete (⌫ = 51, ⌦ = 117)
+        if keyCode == 51 || keyCode == 117 {
+            if inTagNav, let ti = selectedTagIndex, ti < tags.count {
+                let tag = tags[ti]
+                let count = clipboardManager.pinnedItems.filter { $0.tagID == tag.id }.count
+                if count == 0 {
+                    performTagDelete(tag, moveToUntagged: true)
+                } else {
+                    tagPendingDelete        = tag
+                    showingTagDeleteConfirm = true
+                }
+            } else {
+                let items = currentItems
+                guard !items.isEmpty, selectedIndex < items.count else { return }
+                let item = items[selectedIndex]
+                if selectedTab == .history {
+                    clipboardManager.deleteHistoryItem(item)
+                } else {
+                    clipboardManager.unpinItem(item)
+                }
+                selectedIndex = min(selectedIndex, max(0, currentItems.count - 1))
             }
             return
         }
