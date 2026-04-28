@@ -40,6 +40,8 @@ struct PopupView: View {
     /// Index of the focused tag flag in the top-level Pinned view; nil = item list focused.
     @State private var selectedTagIndex: Int? = nil
 
+    @State private var searchText: String = ""
+
     // MARK: - Callbacks
 
     var onClose: () -> Void
@@ -99,6 +101,15 @@ struct PopupView: View {
                 activeTagID      = nil
                 selectedTagIndex = nil
             }
+        }
+        .onChange(of: searchText) { query in
+            guard selectedTab == .pinned, activeTagID == nil else { return }
+            selectedIndex = 0
+            guard !query.isEmpty else { return }
+            let hasUntaggedMatches = !applySearch(
+                clipboardManager.pinnedItems.filter { $0.tagID == nil }
+            ).isEmpty
+            selectedTagIndex = hasUntaggedMatches ? nil : (currentTags.isEmpty ? nil : 0)
         }
         .onReceive(NotificationCenter.default.publisher(for: .clipBoxKeyDown)) { notification in
             guard let keyCode = notification.userInfo?["keyCode"] as? UInt16 else { return }
@@ -164,7 +175,7 @@ struct PopupView: View {
             }
             .padding(.horizontal, 12)
             .padding(.top, 10)
-            .padding(.bottom, 4)
+            .padding(.bottom, 8)
 
             // ── Tab Picker ───────────────────────────────────────────────
             Picker("", selection: $selectedTab) {
@@ -178,6 +189,7 @@ struct PopupView: View {
             .onChange(of: selectedTab) { tab in
                 selectedIndex = 0
                 activeTagID   = nil
+                searchText    = ""
                 if tab == .pinned {
                     selectedTagIndex = clipboardManager.tags.isEmpty ? nil : 0
                 } else {
@@ -189,10 +201,15 @@ struct PopupView: View {
 
             // ── Content ──────────────────────────────────────────────────
             if selectedTab == .history {
+                let filtered = applySearch(clipboardManager.history)
                 if clipboardManager.history.isEmpty {
                     emptyState(icon: "doc.on.clipboard",
                                title: "History is empty",
                                subtitle: "Copy something to get started")
+                } else if filtered.isEmpty {
+                    emptyState(icon: "magnifyingglass",
+                               title: "No results",
+                               subtitle: "Try a different search")
                 } else {
                     historyList
                 }
@@ -201,18 +218,45 @@ struct PopupView: View {
             }
 
             // ── Footer ───────────────────────────────────────────────────
-            if !currentItems.isEmpty {
-                Divider()
-                HStack(spacing: 12) {
-                    Label("Navigate", systemImage: "arrow.up.arrow.down")
-                    Label("Select",   systemImage: "return")
-                    Label("Close",    systemImage: "escape")
+            Divider()
+            ZStack {
+                HStack(spacing: 4) {
+                    Text("\(clipboardManager.history.count)").fontWeight(.medium)
+                    Text("history")
+                    Text("·").foregroundColor(.secondary.opacity(0.35))
+                    Text("\(clipboardManager.pinnedItems.count)").fontWeight(.medium)
+                    Text("pinned")
+                    if !clipboardManager.tags.isEmpty {
+                        Text("·").foregroundColor(.secondary.opacity(0.35))
+                        Text("\(clipboardManager.tags.count)").fontWeight(.medium)
+                        Text("tag\(clipboardManager.tags.count == 1 ? "" : "s")")
+                    }
                 }
-                .font(.system(size: 10))
-                .foregroundColor(.secondary.opacity(0.7))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .font(.system(size: 12))
+                .foregroundColor(searchText.isEmpty ? .secondary.opacity(0.6) : .clear)
+                .frame(maxWidth: .infinity)
+
+                if !searchText.isEmpty {
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 12))
+                            .foregroundColor(.accentColor)
+                        Text(searchText)
+                            .font(.system(size: 12))
+                            .foregroundColor(.primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button { searchText = ""; selectedIndex = 0 } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 13))
+                                .foregroundColor(.secondary.opacity(0.5))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
         }
         .alert(clearConfirmTitle, isPresented: $showingClearConfirm) {
             Button("Clear", role: .destructive, action: triggerClearWithAnimation)
@@ -267,7 +311,7 @@ struct PopupView: View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 2) {
-                    ForEach(Array(clipboardManager.history.enumerated()), id: \.element.id) { index, item in
+                    ForEach(Array(applySearch(clipboardManager.history).enumerated()), id: \.element.id) { index, item in
                         let existingPin = clipboardManager.existingPin(for: item)
                         let unpinAction: (() -> Void)? = existingPin.map { p in
                             { clipboardManager.unpinItem(p) }
@@ -323,6 +367,11 @@ struct PopupView: View {
             emptyState(icon: "pin",
                        title: "No pinned items",
                        subtitle: "Pin items from History to keep them here")
+        } else if !searchText.isEmpty && currentTags.isEmpty &&
+                  applySearch(clipboardManager.pinnedItems.filter { $0.tagID == nil }).isEmpty {
+            emptyState(icon: "magnifyingglass",
+                       title: "No results",
+                       subtitle: "Try a different search")
         } else {
             pinnedTopLevel
         }
@@ -335,11 +384,11 @@ struct PopupView: View {
                 LazyVStack(spacing: 2) {
 
                     // ── Tag flags ────────────────────────────────────────
-                    if !clipboardManager.tags.isEmpty {
+                    if !currentTags.isEmpty {
                         ScrollViewReader { tagProxy in
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 8) {
-                                    ForEach(Array(clipboardManager.tags.enumerated()), id: \.element.id) { index, tag in
+                                    ForEach(Array(currentTags.enumerated()), id: \.element.id) { index, tag in
                                         TagFlagButton(
                                             tag:        tag,
                                             count:      clipboardManager.pinnedItems.filter { $0.tagID == tag.id }.count,
@@ -368,9 +417,9 @@ struct PopupView: View {
                                 .padding(.vertical, 6)
                             }
                             .onChange(of: selectedTagIndex) { idx in
-                                guard let idx, idx < clipboardManager.tags.count else { return }
+                                guard let idx, idx < currentTags.count else { return }
                                 withAnimation(.easeInOut(duration: 0.1)) {
-                                    tagProxy.scrollTo(clipboardManager.tags[idx].id, anchor: .center)
+                                    tagProxy.scrollTo(currentTags[idx].id, anchor: .center)
                                 }
                             }
                         }
@@ -379,9 +428,9 @@ struct PopupView: View {
                     }
 
                     // ── Untagged rows ─────────────────────────────────────
-                    let untagged = clipboardManager.pinnedItems.filter { $0.tagID == nil }
-                    if untagged.isEmpty && !clipboardManager.tags.isEmpty {
-                        Text("No untagged items")
+                    let untagged = applySearch(clipboardManager.pinnedItems.filter { $0.tagID == nil })
+                    if untagged.isEmpty && !currentTags.isEmpty {
+                        Text(searchText.isEmpty ? "No untagged items" : "No results")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary.opacity(0.55))
                             .padding(.vertical, 14)
@@ -455,11 +504,16 @@ struct PopupView: View {
 
             Divider()
 
-            let tagged = clipboardManager.pinnedItems.filter { $0.tagID == tag.id }
-            if tagged.isEmpty {
+            let allTagged = clipboardManager.pinnedItems.filter { $0.tagID == tag.id }
+            let tagged    = applySearch(allTagged)
+            if allTagged.isEmpty {
                 emptyState(icon: "flag",
                            title: "No items in \"\(tag.name)\"",
                            subtitle: "Use the flag icon on a pinned item to assign it")
+            } else if tagged.isEmpty {
+                emptyState(icon: "magnifyingglass",
+                           title: "No results",
+                           subtitle: "Try a different search")
             } else {
                 ScrollViewReader { proxy in
                     ScrollView(.vertical, showsIndicators: false) {
@@ -523,13 +577,34 @@ struct PopupView: View {
 
     // MARK: - Computed Properties
 
+    private func applySearch(_ items: [ClipboardItem]) -> [ClipboardItem] {
+        let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !query.isEmpty else { return items }
+        return items.filter { item in
+            switch item.content {
+            case .text(let t): return t.lowercased().contains(query)
+            case .image:       return (item.description ?? "").lowercased().contains(query)
+            }
+        }
+    }
+
+    /// Tag-urile vizibile — când search e activ, doar cele cu rezultate.
+    private var currentTags: [ClipBoxTag] {
+        guard !searchText.isEmpty else { return clipboardManager.tags }
+        return clipboardManager.tags.filter { tag in
+            !applySearch(clipboardManager.pinnedItems.filter { $0.tagID == tag.id }).isEmpty
+        }
+    }
+
     /// Items used for keyboard navigation (varies by tab + active tag).
     private var currentItems: [ClipboardItem] {
-        if selectedTab == .history { return clipboardManager.history }
-        if let tagID = activeTagID {
-            return clipboardManager.pinnedItems.filter { $0.tagID == tagID }
+        if selectedTab == .history {
+            return applySearch(clipboardManager.history)
         }
-        return clipboardManager.pinnedItems.filter { $0.tagID == nil }
+        if let tagID = activeTagID {
+            return applySearch(clipboardManager.pinnedItems.filter { $0.tagID == tagID })
+        }
+        return applySearch(clipboardManager.pinnedItems.filter { $0.tagID == nil })
     }
 
     /// Whether the Clear button should be disabled.
@@ -577,15 +652,18 @@ struct PopupView: View {
             return
         }
 
-        let tags = clipboardManager.tags
+        let tags = currentTags
         let inTagNav = selectedTab == .pinned && activeTagID == nil && selectedTagIndex != nil
 
-        // Escape: back from tag view → back from settings → close popup
+        // Escape: clear search → back from tag view → back from settings → close popup
         if keyCode == 53 {
             if showingSettings {
                 withAnimation(.easeInOut(duration: 0.22)) { showingSettings = false }
+            } else if !searchText.isEmpty {
+                searchText    = ""
+                selectedIndex = 0
             } else if let tagID = activeTagID {
-                let restoredIndex = clipboardManager.tags.firstIndex(where: { $0.id == tagID })
+                let restoredIndex = currentTags.firstIndex(where: { $0.id == tagID })
                 activeTagID      = nil
                 selectedIndex    = 0
                 selectedTagIndex = restoredIndex
@@ -644,7 +722,7 @@ struct PopupView: View {
         // ↓ Arrow
         if keyCode == 125 {
             if inTagNav {
-                let hasUntagged = clipboardManager.pinnedItems.contains { $0.tagID == nil }
+                let hasUntagged = !applySearch(clipboardManager.pinnedItems.filter { $0.tagID == nil }).isEmpty
                 guard hasUntagged else { return }
                 selectedTagIndex = nil
                 selectedIndex    = 0
@@ -657,8 +735,15 @@ struct PopupView: View {
             return
         }
 
-        // Delete (⌫ = 51, ⌦ = 117)
-        if keyCode == 51 || keyCode == 117 {
+        // Delete — ⌫ (51) afectează doar search-ul; ⌦ (117) șterge elemente/taguri
+        if keyCode == 51 {
+            if !searchText.isEmpty {
+                searchText.removeLast()
+                selectedIndex = 0
+            }
+            return
+        }
+        if keyCode == 117 {
             if inTagNav, let ti = selectedTagIndex, ti < tags.count {
                 let tag = tags[ti]
                 let count = clipboardManager.pinnedItems.filter { $0.tagID == tag.id }.count
@@ -695,6 +780,15 @@ struct PopupView: View {
                 onPaste(items[selectedIndex])
             }
             return
+        }
+
+        // Type-ahead search: orice caracter printabil fără modifier pornește/extinde search-ul
+        let isModified = flags.contains(.command) || flags.contains(.option) || flags.contains(.control)
+        if !isModified,
+           let scalar = chars.unicodeScalars.first,
+           scalar.value >= 0x20 && scalar.value < 0x7F {
+            searchText.append(contentsOf: chars)
+            selectedIndex = 0
         }
     }
 
