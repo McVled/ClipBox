@@ -23,6 +23,7 @@ class ClipboardManager: ObservableObject {
     static let historyLimitKey     = "com.clipbox.historyLimit"
     static let historyLimitDefault = 15
     private static let tagsKey     = "com.clipbox.tags"
+    private static let dateFormatter = ISO8601DateFormatter()
 
     var maxItems: Int {
         let v = UserDefaults.standard.integer(forKey: Self.historyLimitKey)
@@ -142,7 +143,7 @@ class ClipboardManager: ObservableObject {
                 indexEntries.append([
                     "type":  "text",
                     "value": text,
-                    "date":  ISO8601DateFormatter().string(from: item.date)
+                    "date":  Self.dateFormatter.string(from: item.date)
                 ])
 
             case .image(let image):
@@ -154,7 +155,7 @@ class ClipboardManager: ObservableObject {
                 indexEntries.append([
                     "type":     "image",
                     "filename": filename,
-                    "date":     ISO8601DateFormatter().string(from: item.date)
+                    "date":     Self.dateFormatter.string(from: item.date)
                 ])
             }
         }
@@ -257,6 +258,7 @@ class ClipboardManager: ObservableObject {
     /// Moves a pinned item from one index to another within `pinnedItems`.
     func movePinnedItem(fromIndex source: Int, toIndex destination: Int) {
         guard source != destination,
+              destination >= 0,
               pinnedItems.indices.contains(source) else { return }
         let item     = pinnedItems.remove(at: source)
         let adjusted = destination > source ? destination - 1 : destination
@@ -269,7 +271,7 @@ class ClipboardManager: ObservableObject {
 
         for item in pinnedItems {
             var entry: [String: String] = [
-                "date": ISO8601DateFormatter().string(from: item.date)
+                "date": Self.dateFormatter.string(from: item.date)
             ]
             switch item.content {
             case .text(let text):
@@ -349,11 +351,13 @@ class ClipboardManager: ObservableObject {
         }
 
         pinnedItems = loaded
+        pruneEmptyTags()
     }
 
     // MARK: - Monitoring
 
     func startMonitoring() {
+        timer?.invalidate()
         lastChangeCount = NSPasteboard.general.changeCount
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.checkPasteboard()
@@ -387,8 +391,6 @@ class ClipboardManager: ObservableObject {
 
     func clearPinnedItems() {
         pinnedItems.removeAll()
-        tags.removeAll()
-        saveTags()
         savePinnedItems()
         pruneOrphanedImageFiles()
         NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
@@ -445,16 +447,16 @@ class ClipboardManager: ObservableObject {
 
     func paste(item: ClipboardItem) {
         let pb = NSPasteboard.general
-        pb.clearContents()
 
         switch item.content {
         case .text(let text):
+            pb.clearContents()
             pb.setString(text, forType: .string)
 
         case .image(let image):
-            if let data = image.pngData() {
-                pb.setData(data, forType: .png)
-            }
+            guard let data = image.pngData() else { return }
+            pb.clearContents()
+            pb.setData(data, forType: .png)
         }
 
         lastChangeCount = pb.changeCount

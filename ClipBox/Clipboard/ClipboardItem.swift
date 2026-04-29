@@ -95,8 +95,17 @@ struct ClipboardItem: Identifiable {
         case .text(let t):
             return "text:\(t)"
         case .image(let img):
-            let size = img.size
-            return "image:\(size.width)x\(size.height)"
+            guard let tiff = img.tiffRepresentation else {
+                return "image:fallback:\(img.size.width)x\(img.size.height)"
+            }
+            // FNV-1a-style hash of first 64 KB + total byte count.
+            // Sampling the header region alone risks TIFF metadata differences,
+            // but 64 KB of pixel data is both fast and practically collision-free.
+            var h: UInt64 = UInt64(tiff.count) &* 1099511628211
+            tiff.prefix(65536).withUnsafeBytes { buffer in
+                for byte in buffer { h = (h ^ UInt64(byte)) &* 1099511628211 }
+            }
+            return "image:\(tiff.count):\(h)"
         }
     }
 }

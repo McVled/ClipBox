@@ -128,7 +128,7 @@ struct PopupView: View {
 
             // ── Header ────────────────────────────────────────────────────
             HStack(spacing: 8) {
-                Image(systemName: "doc.on.clipboard")
+                Image(systemName: clipboardManager.history.isEmpty && clipboardManager.pinnedItems.isEmpty ? "doc.on.clipboard" : "doc.on.clipboard.fill")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.secondary)
 
@@ -144,6 +144,7 @@ struct PopupView: View {
                         Text("Clear").font(.system(size: 11))
                     }
                     .foregroundColor(clearDisabled ? .secondary.opacity(0.35) : .secondary)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(clearDisabled || isClearing)
@@ -159,6 +160,7 @@ struct PopupView: View {
                         Text("Settings").font(.system(size: 11))
                     }
                     .foregroundColor(.secondary)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
@@ -170,6 +172,7 @@ struct PopupView: View {
                         Text("Quit").font(.system(size: 11))
                     }
                     .foregroundColor(.secondary)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
@@ -347,9 +350,10 @@ struct PopupView: View {
                 .padding(.vertical, 4)
             }
             .onChange(of: selectedIndex) { idx in
-                guard idx < clipboardManager.history.count else { return }
+                let filtered = applySearch(clipboardManager.history)
+                guard idx < filtered.count else { return }
                 withAnimation(.easeInOut(duration: 0.1)) {
-                    proxy.scrollTo(clipboardManager.history[idx].id, anchor: .center)
+                    proxy.scrollTo(filtered[idx].id, anchor: .center)
                 }
             }
         }
@@ -402,12 +406,16 @@ struct PopupView: View {
                                                 clipboardManager.editTag(tag, newName: newName, newColorHex: newColorHex)
                                             },
                                             onDelete: {
+                                                let deletedIndex = index
                                                 if activeTagID == tag.id { activeTagID = nil }
                                                 clipboardManager.deleteTag(tag)
+                                                adjustSelectedTagIndex(afterDeletingAt: deletedIndex)
                                             },
                                             onDeleteWithItems: {
+                                                let deletedIndex = index
                                                 if activeTagID == tag.id { activeTagID = nil }
                                                 clipboardManager.deleteTagAndItems(tag)
+                                                adjustSelectedTagIndex(afterDeletingAt: deletedIndex)
                                             }
                                         )
                                         .id(tag.id)
@@ -577,6 +585,21 @@ struct PopupView: View {
 
     // MARK: - Computed Properties
 
+    /// Adjusts `selectedTagIndex` after a tag at `deletedIndex` (in `currentTags`) is removed.
+    /// Must be called AFTER the deletion so `currentTags` reflects the post-deletion state.
+    private func adjustSelectedTagIndex(afterDeletingAt deletedIndex: Int) {
+        let newCount = currentTags.count
+        guard let si = selectedTagIndex else { return }
+        if newCount == 0 {
+            selectedTagIndex = nil
+        } else if deletedIndex < si {
+            selectedTagIndex = si - 1
+        } else if deletedIndex == si {
+            selectedTagIndex = min(si, newCount - 1)
+        }
+        // deletedIndex > si: keyboard focus is on a tag that hasn't shifted — no change needed
+    }
+
     private func applySearch(_ items: [ClipboardItem]) -> [ClipboardItem] {
         let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
         guard !query.isEmpty else { return items }
@@ -609,6 +632,9 @@ struct PopupView: View {
 
     /// Whether the Clear button should be disabled.
     private var clearDisabled: Bool {
+        // Prevent clearing while a search filter is active — the user sees only a
+        // subset and would not expect Clear to nuke everything hidden by the filter.
+        guard searchText.isEmpty else { return true }
         if selectedTab == .history { return clipboardManager.history.isEmpty }
         if let tagID = activeTagID {
             return clipboardManager.pinnedItems.filter { $0.tagID == tagID }.isEmpty
@@ -735,34 +761,26 @@ struct PopupView: View {
             return
         }
 
-        // Delete — ⌫ (51) afectează doar search-ul; ⌦ (117) șterge elemente/taguri
+        // Delete — ⌫ (51) afectează doar search-ul; ⌦ (117) sau ⌘⌫ șterge elemente/taguri
         if keyCode == 51 {
-            if !searchText.isEmpty {
+            if flags.contains(.command) {
+                performDelete(inTagNav: inTagNav, tags: tags)
+            } else if !searchText.isEmpty {
                 searchText.removeLast()
                 selectedIndex = 0
             }
             return
         }
         if keyCode == 117 {
-            if inTagNav, let ti = selectedTagIndex, ti < tags.count {
-                let tag = tags[ti]
-                let count = clipboardManager.pinnedItems.filter { $0.tagID == tag.id }.count
-                if count == 0 {
-                    performTagDelete(tag, moveToUntagged: true)
-                } else {
-                    tagPendingDelete        = tag
-                    showingTagDeleteConfirm = true
-                }
-            } else {
-                let items = currentItems
-                guard !items.isEmpty, selectedIndex < items.count else { return }
-                let item = items[selectedIndex]
-                if selectedTab == .history {
-                    clipboardManager.deleteHistoryItem(item)
-                } else {
-                    clipboardManager.unpinItem(item)
-                }
-                selectedIndex = min(selectedIndex, max(0, currentItems.count - 1))
+            performDelete(inTagNav: inTagNav, tags: tags)
+            return
+        }
+
+        // ⌘A — curăță tot search-ul
+        if keyCode == 0, flags.contains(.command) {
+            if !searchText.isEmpty {
+                searchText    = ""
+                selectedIndex = 0
             }
             return
         }
@@ -782,13 +800,37 @@ struct PopupView: View {
             return
         }
 
-        // Type-ahead search: orice caracter printabil fără modifier pornește/extinde search-ul
+        // Type-ahead search: orice caracter printabil (inclusiv non-ASCII) fără modifier.
+        // Filtrăm C0 controls (< 0x20) și DEL (0x7F); C1 (0x80-0x9F) nu apare din tastatură.
         let isModified = flags.contains(.command) || flags.contains(.option) || flags.contains(.control)
         if !isModified,
            let scalar = chars.unicodeScalars.first,
-           scalar.value >= 0x20 && scalar.value < 0x7F {
+           scalar.value >= 0x20 && scalar.value != 0x7F {
             searchText.append(contentsOf: chars)
             selectedIndex = 0
+        }
+    }
+
+    private func performDelete(inTagNav: Bool, tags: [ClipBoxTag]) {
+        if inTagNav, let ti = selectedTagIndex, ti < tags.count {
+            let tag = tags[ti]
+            let count = clipboardManager.pinnedItems.filter { $0.tagID == tag.id }.count
+            if count == 0 {
+                performTagDelete(tag, moveToUntagged: true)
+            } else {
+                tagPendingDelete        = tag
+                showingTagDeleteConfirm = true
+            }
+        } else {
+            let items = currentItems
+            guard !items.isEmpty, selectedIndex < items.count else { return }
+            let item = items[selectedIndex]
+            if selectedTab == .history {
+                clipboardManager.deleteHistoryItem(item)
+            } else {
+                clipboardManager.unpinItem(item)
+            }
+            selectedIndex = min(selectedIndex, max(0, currentItems.count - 1))
         }
     }
 

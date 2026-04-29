@@ -75,11 +75,7 @@ final class StatusBarController {
         ClipboardManager.shared.$history
             .merge(with: ClipboardManager.shared.$pinnedItems)
             .debounce(for: 0.1, scheduler: DispatchQueue.main)
-            .sink { [weak self] _ in
-                DispatchQueue.main.async {
-                    self?.updateStatusIcon()
-                }
-            }
+            .sink { [weak self] _ in self?.updateStatusIcon() }
             .store(in: &cancellables)
     }
 
