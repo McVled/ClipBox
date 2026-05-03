@@ -396,6 +396,15 @@ class ClipboardManager: ObservableObject {
         NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
     }
 
+    func clearAllPinned() {
+        tags.removeAll()
+        pinnedItems.removeAll()
+        saveTags()
+        savePinnedItems()
+        pruneOrphanedImageFiles()
+        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
+    }
+
     /// Removes all pinned items that belong to the given tag (keeps the tag itself).
     func clearPinnedItems(withTagID tagID: UUID) {
         pinnedItems.removeAll { $0.tagID == tagID }

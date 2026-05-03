@@ -639,17 +639,19 @@ struct PopupView: View {
         if let tagID = activeTagID {
             return clipboardManager.pinnedItems.filter { $0.tagID == tagID }.isEmpty
         }
-        return clipboardManager.pinnedItems.isEmpty
+        return clipboardManager.pinnedItems.isEmpty && clipboardManager.tags.isEmpty
     }
 
     // MARK: - Clear Animation
 
     private func triggerClearWithAnimation() {
-        // Inside a tag view: immediately unpin all items in that tag, then pop back.
-        if let tagID = activeTagID {
-            activeTagID = nil
-            selectedIndex = 0
-            ClipboardManager.shared.clearPinnedItems(withTagID: tagID)
+        // Inside a tag view: delete the tag and all its items, then pop back.
+        if let tagID = activeTagID,
+           let tag = clipboardManager.tags.first(where: { $0.id == tagID }) {
+            activeTagID      = nil
+            selectedIndex    = 0
+            selectedTagIndex = nil
+            ClipboardManager.shared.deleteTagAndItems(tag)
             return
         }
 
@@ -664,7 +666,7 @@ struct PopupView: View {
             if tabToClean == .history {
                 ClipboardManager.shared.clearHistory()
             } else {
-                ClipboardManager.shared.clearPinnedItems()
+                ClipboardManager.shared.clearAllPinned()
             }
             self.isClearing = false
         }

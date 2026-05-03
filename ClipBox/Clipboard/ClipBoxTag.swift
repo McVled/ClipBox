@@ -27,6 +27,8 @@ struct ClipBoxTag: Identifiable, Codable {
         "#54A0FF",
         "#5F27CD",
         "#FF9FF3",
+        "#2ECC71",
+        "#E84393",
     ]
 }
 
