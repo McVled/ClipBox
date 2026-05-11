@@ -97,23 +97,21 @@ struct ClipboardRowView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .background(
-                    PopoverAnchor(isPresented: $showingTagPopup, preferredEdge: .minY) {
-                        TagAssignPopover(
-                            tags:         tags,
-                            currentTagID: item.tagID,
-                            onSelect: { tagID in
-                                showingTagPopup = false
-                                onAssignTag(tagID)
-                            },
-                            onCreate: { name, colorHex in
-                                showingTagPopup = false
-                                onCreateAndAssignTag?(name, colorHex)
-                            },
-                            onCancel: { showingTagPopup = false }
-                        )
-                    }
-                )
+                .popover(isPresented: $showingTagPopup, arrowEdge: .top) {
+                    TagAssignPopover(
+                        tags:         tags,
+                        currentTagID: item.tagID,
+                        onSelect: { tagID in
+                            showingTagPopup = false
+                            onAssignTag(tagID)
+                        },
+                        onCreate: { name, colorHex in
+                            showingTagPopup = false
+                            onCreateAndAssignTag?(name, colorHex)
+                        },
+                        onCancel: { showingTagPopup = false }
+                    )
+                }
             }
 
             // ── Pin / Unpin ───────────────────────────────────────────────
@@ -131,24 +129,22 @@ struct ClipboardRowView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .background(
-                    PopoverAnchor(isPresented: $showingPinPopup, preferredEdge: .minY) {
-                        PinOptionsPopover(
-                            existingPin:   existingPin,
-                            tags:          tags,
-                            onCreateTag:   onCreateTag,
-                            onPin: { description, isHidden, tagID in
-                                showingPinPopup = false
-                                onPin(description, isHidden, tagID)
-                            },
-                            onUnpin: {
-                                showingPinPopup = false
-                                onUnpin?()
-                            },
-                            onCancel: { showingPinPopup = false }
-                        )
-                    }
-                )
+                .popover(isPresented: $showingPinPopup, arrowEdge: .top) {
+                    PinOptionsPopover(
+                        existingPin:   existingPin,
+                        tags:          tags,
+                        onCreateTag:   onCreateTag,
+                        onPin: { description, isHidden, tagID in
+                            showingPinPopup = false
+                            onPin(description, isHidden, tagID)
+                        },
+                        onUnpin: {
+                            showingPinPopup = false
+                            onUnpin?()
+                        },
+                        onCancel: { showingPinPopup = false }
+                    )
+                }
 
             } else if let onUnpin {
                 Button(action: onUnpin) {

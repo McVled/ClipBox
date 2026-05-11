@@ -600,18 +600,23 @@ struct PopupView: View {
         // deletedIndex > si: keyboard focus is on a tag that hasn't shifted — no change needed
     }
 
+    private static let imageKeywords: Set<String> = [
+        "picture", "pictures", "image", "images", "photo", "photos", "img"
+    ]
+
     private func applySearch(_ items: [ClipboardItem]) -> [ClipboardItem] {
         let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
         guard !query.isEmpty else { return items }
+        let isImageQuery = Self.imageKeywords.contains(query)
         return items.filter { item in
             switch item.content {
             case .text(let t): return t.lowercased().contains(query)
-            case .image:       return (item.description ?? "").lowercased().contains(query)
+            case .image:       return isImageQuery || (item.description ?? "").lowercased().contains(query)
             }
         }
     }
 
-    /// Tag-urile vizibile — când search e activ, doar cele cu rezultate.
+    /// Visible tags — when search is active, only those with matching results.
     private var currentTags: [ClipBoxTag] {
         guard !searchText.isEmpty else { return clipboardManager.tags }
         return clipboardManager.tags.filter { tag in
@@ -763,7 +768,7 @@ struct PopupView: View {
             return
         }
 
-        // Delete — ⌫ (51) afectează doar search-ul; ⌦ (117) sau ⌘⌫ șterge elemente/taguri
+        // Delete — ⌫ (51) only affects search; ⌦ (117) or ⌘⌫ deletes items/tags
         if keyCode == 51 {
             if flags.contains(.command) {
                 performDelete(inTagNav: inTagNav, tags: tags)
@@ -775,15 +780,6 @@ struct PopupView: View {
         }
         if keyCode == 117 {
             performDelete(inTagNav: inTagNav, tags: tags)
-            return
-        }
-
-        // ⌘A — curăță tot search-ul
-        if keyCode == 0, flags.contains(.command) {
-            if !searchText.isEmpty {
-                searchText    = ""
-                selectedIndex = 0
-            }
             return
         }
 
@@ -802,8 +798,8 @@ struct PopupView: View {
             return
         }
 
-        // Type-ahead search: orice caracter printabil (inclusiv non-ASCII) fără modifier.
-        // Filtrăm C0 controls (< 0x20) și DEL (0x7F); C1 (0x80-0x9F) nu apare din tastatură.
+        // Type-ahead search: any printable character (including non-ASCII) without a modifier.
+        // Filter out C0 controls (< 0x20) and DEL (0x7F); C1 (0x80–0x9F) never comes from a keyboard.
         let isModified = flags.contains(.command) || flags.contains(.option) || flags.contains(.control)
         if !isModified,
            let scalar = chars.unicodeScalars.first,
@@ -946,18 +942,16 @@ private struct TagFlagButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(
-            PopoverAnchor(isPresented: $showingEdit, preferredEdge: .minY) {
-                TagEditPopover(
-                    tag:      tag,
-                    onSave: { name, colorHex in
-                        showingEdit = false
-                        onEdit(name, colorHex)
-                    },
-                    onCancel: { showingEdit = false }
-                )
-            }
-        )
+        .popover(isPresented: $showingEdit, arrowEdge: .top) {
+            TagEditPopover(
+                tag:      tag,
+                onSave: { name, colorHex in
+                    showingEdit = false
+                    onEdit(name, colorHex)
+                },
+                onCancel: { showingEdit = false }
+            )
+        }
         .contextMenu {
             Button("Edit…") { showingEdit = true }
             Divider()

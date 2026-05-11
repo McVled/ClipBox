@@ -17,6 +17,12 @@ import SwiftUI
 /// AppDelegate stays minimal — no menu bar icon needed.
 class AppDelegate: NSObject, NSApplicationDelegate {
 
+    // MARK: - State
+
+    /// Observer that disables the pop-in animation on every NSPopover the app
+    /// presents. Kept as a property so we can deregister it on terminate.
+    private var popoverAnimationObserver: NSObjectProtocol?
+
     // MARK: - Launch
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -37,6 +43,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Install the optional menu-bar icon if the user has it enabled.
         StatusBarController.shared.applyCurrentSetting()
+
+        // Disable popover animations app-wide.  SwiftUI's `.popover()` modifier
+        // creates a stock NSPopover whose `animates` flag defaults to true,
+        // producing a small but noticeable pop-in animation.  We catch every
+        // popover at willShow time — before NSPopover reads the flag to set
+        // up its appearance — and turn it off so popovers appear instantly.
+        popoverAnimationObserver = NotificationCenter.default.addObserver(
+            forName: NSPopover.willShowNotification,
+            object:  nil,
+            queue:   .main
+        ) { note in
+            (note.object as? NSPopover)?.animates = false
+        }
     }
 
     // MARK: - Quit
@@ -45,6 +64,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Clean up: stop the clipboard timer and remove the CGEventTap.
         ClipboardManager.shared.stopMonitoring()
         HotkeyManager.shared.stop()
+
+        if let obs = popoverAnimationObserver {
+            NotificationCenter.default.removeObserver(obs)
+            popoverAnimationObserver = nil
+        }
     }
 
     // MARK: - Reopen

@@ -30,8 +30,21 @@ struct PopoverAnchor<Content: View>: NSViewRepresentable {
         context.coordinator.latestContent = content
         if isPresented {
             guard !context.coordinator.popover.isShown else { return }
-            // Defer to next run-loop tick so the anchor view's frame is finalised.
-            DispatchQueue.main.async { context.coordinator.show(edge: preferredEdge) }
+
+            // Capture mouse position NOW — the user just clicked this button so
+            // the cursor is reliably on it.  We use this instead of computing the
+            // anchor from anchorView.frame because SwiftUI's LazyVStack places
+            // NSViewRepresentable views at their absolute document-space offset,
+            // not their scroll-adjusted visible position.  Any frame-based
+            // coordinate conversion therefore produces a wrong Y when the list
+            // has been scrolled.
+            let mouseLocation = NSEvent.mouseLocation
+
+            // Defer long enough for any in-flight SwiftUI layout pass to settle
+            // before we ask AppKit for the window reference.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                context.coordinator.show(near: mouseLocation, edge: preferredEdge)
+            }
         } else if context.coordinator.popover.isShown {
             context.coordinator.popover.close()
         }
@@ -48,8 +61,9 @@ struct PopoverAnchor<Content: View>: NSViewRepresentable {
         @Binding var isPresented: Bool
         var latestContent: () -> Content
 
-        /// The invisible NSView used as the popover's anchor point.
-        /// It is sized and positioned to match the SwiftUI button via `.background()`.
+        /// Invisible NSView whose sole job is to give us a reference to the
+        /// hosting window.  Positioning is done via the captured mouse location,
+        /// not via this view's frame.
         let anchorView = NSView()
         let popover    = NSPopover()
 
@@ -66,14 +80,21 @@ struct PopoverAnchor<Content: View>: NSViewRepresentable {
             popover.delegate = nil
         }
 
-        func show(edge: NSRectEdge) {
+        func show(near screenLocation: NSPoint, edge: NSRectEdge) {
+            guard let window = anchorView.window,
+                  let contentView = window.contentView else { return }
+
+            // Convert the captured screen point to the window's contentView space,
+            // then build a button-sized rect centred on it as the popover anchor.
+            let windowPoint  = window.convertPoint(fromScreen: screenLocation)
+            let point        = contentView.convert(windowPoint, from: nil)
+            let w: CGFloat   = anchorView.bounds.width  > 1 ? anchorView.bounds.width  : 24
+            let h: CGFloat   = anchorView.bounds.height > 1 ? anchorView.bounds.height : 24
+            let anchorRect   = NSRect(x: point.x - w / 2, y: point.y - h / 2, width: w, height: h)
+
             let vc = NSHostingController(rootView: latestContent())
             popover.contentViewController = vc
-            popover.show(
-                relativeTo: anchorView.bounds,
-                of: anchorView,
-                preferredEdge: edge
-            )
+            popover.show(relativeTo: anchorRect, of: contentView, preferredEdge: edge)
         }
 
         // Sync isPresented back when the user clicks outside (transient close).
