@@ -73,18 +73,23 @@ class HotkeyManager {
     /// the main run loop (which drives all macOS event processing).
     private var runLoopSource: CFRunLoopSource?
 
+    /// Polls `AXIsProcessTrusted()` once a second while we're waiting for the
+    /// user to grant Accessibility permission, so we can install the tap as
+    /// soon as it's available — no app restart required.
+    private var permissionTimer: Timer?
+
     // MARK: - Init
 
     private init() {}
 
     // MARK: - Lifecycle
 
-    /// Installs the global event tap and starts listening for ⌘⇧V.
-    /// Safe to call multiple times — subsequent calls are no-ops if already running.
+    /// Installs the global event tap and starts listening for the configured
+    /// shortcut.  Safe to call multiple times — subsequent calls are no-ops
+    /// if a tap is already running.  If Accessibility permission is missing
+    /// we prompt the user, return without creating a tap, and poll until the
+    /// permission flips on, then retry automatically.
     func start() {
-        // Guard against double-registration. Without this, calling start() twice
-        // would leak the previous CGEventTap and run-loop source, and both taps
-        // would fire the callback on every keypress.
         guard eventTap == nil else { return }
 
         // Ask for Accessibility permission. `kAXTrustedCheckOptionPrompt: true`
@@ -94,12 +99,12 @@ class HotkeyManager {
         if !trusted {
             print("ClipBox: Waiting for Accessibility permission. Please allow in System Settings.")
             // The system prompt above is a one-shot — if the user dismisses it
-            // the hotkey will silently never fire. Show our own alert with a
+            // the hotkey would silently never fire. Show our own alert with a
             // direct link to the pane so they don't have to hunt for it.
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 let alert = NSAlert()
                 alert.messageText = "Accessibility Permission Required"
-                alert.informativeText = "ClipBox needs Accessibility access to listen for its global shortcut. Enable ClipBox in System Settings → Privacy & Security → Accessibility, then restart the app."
+                alert.informativeText = "ClipBox needs Accessibility access to listen for its global shortcut. Enable ClipBox in System Settings → Privacy & Security → Accessibility — the shortcut will start working as soon as you do."
                 alert.alertStyle = .warning
                 alert.addButton(withTitle: "Open System Settings")
                 alert.addButton(withTitle: "Later")
@@ -107,7 +112,11 @@ class HotkeyManager {
                    let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
                     NSWorkspace.shared.open(url)
                 }
+                self?.startPermissionPolling()
             }
+            // Don't try to create the tap yet — `tapCreate` will fail without
+            // permission and we'd just fall through to the same error path.
+            return
         }
 
         // We only care about keyDown events, so build a bitmask for just that type.
@@ -198,5 +207,23 @@ class HotkeyManager {
         }
         eventTap = nil
         runLoopSource = nil
+
+        permissionTimer?.invalidate()
+        permissionTimer = nil
+    }
+
+    // MARK: - Permission Polling
+
+    /// Watches for Accessibility permission to flip on, then retries `start()`.
+    /// Uses `AXIsProcessTrusted()` (no prompt) so we don't show the system
+    /// dialog again on every tick.
+    private func startPermissionPolling() {
+        permissionTimer?.invalidate()
+        permissionTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
+            guard AXIsProcessTrusted() else { return }
+            timer.invalidate()
+            self?.permissionTimer = nil
+            self?.start()
+        }
     }
 }

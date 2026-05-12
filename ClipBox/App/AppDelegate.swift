@@ -65,6 +65,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ClipboardManager.shared.stopMonitoring()
         HotkeyManager.shared.stop()
 
+        // Wait for any in-flight background saves to finish so we never quit
+        // with a half-written index or missing image file on disk.
+        ClipboardManager.shared.flushPendingSaves()
+
         if let obs = popoverAnimationObserver {
             NotificationCenter.default.removeObserver(obs)
             popoverAnimationObserver = nil

@@ -161,7 +161,7 @@ class PopupWindow {
 
         // ④ Create the panel.
         let newPanel = KeyablePanel(
-            contentRect: NSRect(x: 0, y: 0, width: 340, height: 380),
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 400),
             styleMask: [
                 .borderless,          // No title bar, no resize handles.
                 .nonactivatingPanel   // Does NOT make ClipBox the active app.
@@ -262,7 +262,7 @@ class PopupWindow {
     /// Default placement: just right of and slightly below the cursor.
     /// If that would clip a screen edge, we mirror to the opposite side.
     private func positionPanel(_ panel: NSPanel, at cursor: CGPoint) {
-        let size   = NSSize(width: 340, height: 380)
+        let size   = NSSize(width: 340, height: 400)
         let offset: CGFloat = 10
 
         // Find which screen the cursor is on. Fall back to the main screen.
@@ -275,8 +275,10 @@ class PopupWindow {
         // `visibleFrame` excludes the menu bar and Dock, so we don't overlap them.
         let sf = screen.visibleFrame
 
-        // Default: place to the right of the cursor and above the cursor.
-        // (macOS Y axis goes up, so subtracting the height moves origin downward.)
+        // Default: place to the right of the cursor and hanging *below* it —
+        // the panel's top edge sits at `cursor.y - offset`, with the panel
+        // extending downward from there.  (macOS Y axis goes up, so the
+        // origin we set here is the panel's bottom-left corner.)
         var x = cursor.x + offset
         var y = cursor.y - size.height - offset
 
@@ -296,7 +298,7 @@ class PopupWindow {
     /// given screen-space rect — used when the popup is summoned from the
     /// menu-bar status item.
     private func positionPanel(_ panel: NSPanel, anchoredTo anchor: NSRect) {
-        let size = NSSize(width: 340, height: 380)
+        let size = NSSize(width: 340, height: 400)
         let gap: CGFloat = 4
 
         // Find which screen the anchor lives on. Fall back to main.

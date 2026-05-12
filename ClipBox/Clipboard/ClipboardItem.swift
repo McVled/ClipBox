@@ -26,6 +26,11 @@ struct ClipboardItem: Identifiable {
     /// The tag this pinned item belongs to, or nil if untagged.
     let tagID: UUID?
 
+    /// Cached dedup key — generating it for images regenerates the TIFF
+    /// representation and hashes 64 KB, which is far too expensive to do on
+    /// every comparison.  We compute it once at construction.
+    let deduplicationKey: String
+
     // MARK: - Convenience inits
 
     init(text: String, description: String? = nil, isHidden: Bool = false, tagID: UUID? = nil) {
@@ -35,6 +40,7 @@ struct ClipboardItem: Identifiable {
         self.description = description
         self.isHidden    = isHidden
         self.tagID       = tagID
+        self.deduplicationKey = Self.computeKey(for: self.content)
     }
 
     init(image: NSImage, description: String? = nil, isHidden: Bool = false, tagID: UUID? = nil) {
@@ -44,6 +50,7 @@ struct ClipboardItem: Identifiable {
         self.description = description
         self.isHidden    = isHidden
         self.tagID       = tagID
+        self.deduplicationKey = Self.computeKey(for: self.content)
     }
 
     init(content: ClipboardContent, date: Date, description: String? = nil, isHidden: Bool = false, tagID: UUID? = nil) {
@@ -53,28 +60,35 @@ struct ClipboardItem: Identifiable {
         self.description = description
         self.isHidden    = isHidden
         self.tagID       = tagID
+        self.deduplicationKey = Self.computeKey(for: self.content)
     }
 
-    /// Internal init that preserves a given id — used only by `withTagID(_:)`.
+    /// Internal init that preserves a given id AND the cached dedup key.
+    /// Used by `withTagID(_:)` so we don't recompute the key (content hasn't
+    /// changed, only metadata has).
     private init(preservingID id: UUID, content: ClipboardContent, date: Date,
-                 description: String?, isHidden: Bool, tagID: UUID?) {
-        self.id          = id
-        self.content     = content
-        self.date        = date
-        self.description = description
-        self.isHidden    = isHidden
-        self.tagID       = tagID
+                 description: String?, isHidden: Bool, tagID: UUID?,
+                 deduplicationKey: String) {
+        self.id               = id
+        self.content          = content
+        self.date             = date
+        self.description      = description
+        self.isHidden         = isHidden
+        self.tagID            = tagID
+        self.deduplicationKey = deduplicationKey
     }
 
-    /// Returns a copy of this item with the given tagID, keeping the same identity.
+    /// Returns a copy of this item with the given tagID, keeping the same identity
+    /// and reusing the cached dedup key (content is unchanged).
     func withTagID(_ tagID: UUID?) -> ClipboardItem {
         ClipboardItem(
-            preservingID: id,
-            content:      content,
-            date:         date,
-            description:  description,
-            isHidden:     isHidden,
-            tagID:        tagID
+            preservingID:     id,
+            content:          content,
+            date:             date,
+            description:      description,
+            isHidden:         isHidden,
+            tagID:            tagID,
+            deduplicationKey: deduplicationKey
         )
     }
 
@@ -90,7 +104,7 @@ struct ClipboardItem: Identifiable {
         return nil
     }
 
-    var deduplicationKey: String {
+    private static func computeKey(for content: ClipboardContent) -> String {
         switch content {
         case .text(let t):
             return "text:\(t)"

@@ -87,7 +87,7 @@ struct PopupView: View {
             }
         }
         .frame(width: 340)
-        .frame(minHeight: 60, maxHeight: 380)
+        .frame(minHeight: 60, maxHeight: 400)
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
@@ -865,10 +865,30 @@ struct PopupView: View {
 
         guard new.hasModifier else { return }
 
+        // Block plain-⌘ shortcuts that would clobber core system actions
+        // (Copy, Paste, Cut, Undo, Select All, Quit, Close Window).  Without
+        // this guard a user can accidentally bind ⌘C and silently break
+        // every app's copy command system-wide until they reset the hotkey.
+        guard !Self.isReservedShortcut(new) else { return }
+
         shortcut = new
         HotkeyManager.shared.currentShortcut = new
         isRecording = false
         HotkeyManager.shared.isRecording = false
+    }
+
+    /// Returns true for plain ⌘+letter shortcuts that own widely-used system
+    /// actions.  Any combo with an extra modifier (⇧/⌥/⌃) is allowed through.
+    private static func isReservedShortcut(_ s: Shortcut) -> Bool {
+        guard s.command, !s.shift, !s.option, !s.control else { return false }
+        //  0 = A (Select All)
+        //  6 = Z (Undo)
+        //  7 = X (Cut)
+        //  8 = C (Copy)
+        //  9 = V (Paste)
+        // 12 = Q (Quit)
+        // 13 = W (Close Window)
+        return [0, 6, 7, 8, 9, 12, 13].contains(s.keyCode)
     }
 
     private func specialKeyName(for keyCode: UInt16) -> String? {

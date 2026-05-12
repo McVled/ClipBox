@@ -35,7 +35,6 @@ class ClipboardManager: ObservableObject {
         guard history.count > limit else { return }
         history = Array(history.prefix(limit))
         saveHistory()
-        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
     }
 
     private let maxImageDimension: CGFloat = 1024
@@ -43,25 +42,40 @@ class ClipboardManager: ObservableObject {
     private var timer: Timer?
     private var lastChangeCount: Int = NSPasteboard.general.changeCount
 
-    private lazy var imagesDirectory: URL = {
+    /// Set during `init`, never mutated.  Eagerly initialised (not lazy) because
+    /// `imagesDirectory` is read from the background save queue and `lazy var`
+    /// is not thread-safe on first access.
+    private let imagesDirectory: URL
+
+    private let indexKey       = "com.clipbox.historyIndex"
+    private let pinnedIndexKey = "com.clipbox.pinnedIndex"
+
+    /// Serial queue that handles all filesystem and UserDefaults persistence
+    /// so it never blocks the main thread.  Saves are dispatched async after
+    /// snapshotting the relevant state on main.  Ordering is preserved because
+    /// the queue is serial.
+    private let saveQueue = DispatchQueue(label: "com.clipbox.persistence", qos: .utility)
+
+    // MARK: - Init
+
+    private init() {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first ?? FileManager.default.temporaryDirectory
         let dir = appSupport.appendingPathComponent("ClipBox/images", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }()
+        self.imagesDirectory = dir
 
-    private let indexKey       = "com.clipbox.historyIndex"
-    private let pinnedIndexKey = "com.clipbox.pinnedIndex"
-
-    // MARK: - Init
-
-    private init() {
         loadTags()
         loadHistory()
         loadPinnedItems()
+    }
+
+    /// Blocks until every pending background save has completed.  Called from
+    /// `applicationWillTerminate` so we never quit with in-flight writes.
+    func flushPendingSaves() {
+        saveQueue.sync {}
     }
 
     // MARK: - Tags
@@ -107,7 +121,6 @@ class ClipboardManager: ObservableObject {
         saveTags()
         savePinnedItems()
         pruneOrphanedImageFiles()
-        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
     }
 
     /// Removes every tag that has no pinned items. Called after any operation
@@ -120,8 +133,11 @@ class ClipboardManager: ObservableObject {
     }
 
     private func saveTags() {
-        if let data = try? JSONEncoder().encode(tags) {
-            UserDefaults.standard.set(data, forKey: Self.tagsKey)
+        let snapshot = tags
+        saveQueue.async {
+            if let data = try? JSONEncoder().encode(snapshot) {
+                UserDefaults.standard.set(data, forKey: Self.tagsKey)
+            }
         }
     }
 
@@ -135,57 +151,73 @@ class ClipboardManager: ObservableObject {
     // MARK: - Persistence: Save History
 
     private func saveHistory() {
-        var indexEntries: [[String: String]] = []
+        let snapshot = history
+        let dir      = imagesDirectory
+        let key      = indexKey
+        let active   = computeActiveImageFilenames()
+        saveQueue.async {
+            var indexEntries: [[String: String]] = []
 
-        for item in history {
-            switch item.content {
-            case .text(let text):
-                indexEntries.append([
-                    "type":  "text",
-                    "value": text,
-                    "date":  Self.dateFormatter.string(from: item.date)
-                ])
+            for item in snapshot {
+                switch item.content {
+                case .text(let text):
+                    indexEntries.append([
+                        "type":  "text",
+                        "value": text,
+                        "date":  Self.dateFormatter.string(from: item.date)
+                    ])
 
-            case .image(let image):
-                let filename = "\(item.id).png"
-                let fileURL  = imagesDirectory.appendingPathComponent(filename)
-                if let pngData = image.pngData() {
-                    try? pngData.write(to: fileURL)
+                case .image(let image):
+                    let filename = "\(item.id).png"
+                    let fileURL  = dir.appendingPathComponent(filename)
+                    // Image content is immutable per UUID, so once the file
+                    // exists we don't need to rewrite it on subsequent saves.
+                    if !FileManager.default.fileExists(atPath: fileURL.path),
+                       let pngData = image.pngData() {
+                        try? pngData.write(to: fileURL)
+                    }
+                    indexEntries.append([
+                        "type":     "image",
+                        "filename": filename,
+                        "date":     Self.dateFormatter.string(from: item.date)
+                    ])
                 }
-                indexEntries.append([
-                    "type":     "image",
-                    "filename": filename,
-                    "date":     Self.dateFormatter.string(from: item.date)
-                ])
             }
-        }
 
-        if let data = try? JSONEncoder().encode(indexEntries) {
-            UserDefaults.standard.set(data, forKey: indexKey)
-        }
+            if let data = try? JSONEncoder().encode(indexEntries) {
+                UserDefaults.standard.set(data, forKey: key)
+            }
 
-        pruneOrphanedImageFiles()
+            Self.prune(directory: dir, keeping: active)
+        }
+    }
+
+    /// Snapshot of currently-active image filenames (must be called on the main
+    /// thread before dispatching to `saveQueue`).
+    private func computeActiveImageFilenames() -> Set<String> {
+        var names: Set<String> = []
+        for item in history where item.image != nil {
+            names.insert("\(item.id).png")
+        }
+        for item in pinnedItems where item.image != nil {
+            names.insert("pinned_\(item.id).png")
+        }
+        return names
     }
 
     private func pruneOrphanedImageFiles() {
-        let historyFilenames = history.compactMap { item -> String? in
-            guard case .image = item.content else { return nil }
-            return "\(item.id).png"
+        let dir    = imagesDirectory
+        let active = computeActiveImageFilenames()
+        saveQueue.async {
+            Self.prune(directory: dir, keeping: active)
         }
-        let pinnedFilenames = pinnedItems.compactMap { item -> String? in
-            guard case .image = item.content else { return nil }
-            return "pinned_\(item.id).png"
-        }
-        let activeFilenames = Set(historyFilenames + pinnedFilenames)
+    }
 
-        let allFiles = (try? FileManager.default.contentsOfDirectory(
-            atPath: imagesDirectory.path
-        )) ?? []
-
-        for file in allFiles where !activeFilenames.contains(file) {
-            try? FileManager.default.removeItem(
-                at: imagesDirectory.appendingPathComponent(file)
-            )
+    /// Background-safe directory cleanup — only touches its parameters.
+    private static func prune(directory: URL, keeping active: Set<String>) {
+        let allFiles = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        for file in allFiles where !active.contains(file) {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(file))
         }
     }
 
@@ -245,61 +277,56 @@ class ClipboardManager: ObservableObject {
         savePinnedItems()
         history.removeAll { $0.deduplicationKey == item.deduplicationKey }
         saveHistory()
-        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
     }
 
     func unpinItem(_ item: ClipboardItem) {
         pinnedItems.removeAll { $0.id == item.id }
         savePinnedItems()
         pruneOrphanedImageFiles()
-        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
-    }
-
-    /// Moves a pinned item from one index to another within `pinnedItems`.
-    func movePinnedItem(fromIndex source: Int, toIndex destination: Int) {
-        guard source != destination,
-              destination >= 0,
-              pinnedItems.indices.contains(source) else { return }
-        let item     = pinnedItems.remove(at: source)
-        let adjusted = destination > source ? destination - 1 : destination
-        pinnedItems.insert(item, at: min(adjusted, pinnedItems.count))
-        savePinnedItems()
     }
 
     private func savePinnedItems() {
-        var indexEntries: [[String: String]] = []
+        let snapshot = pinnedItems
+        let dir      = imagesDirectory
+        let key      = pinnedIndexKey
+        saveQueue.async {
+            var indexEntries: [[String: String]] = []
 
-        for item in pinnedItems {
-            var entry: [String: String] = [
-                "date": Self.dateFormatter.string(from: item.date)
-            ]
-            switch item.content {
-            case .text(let text):
-                entry["type"]  = "text"
-                entry["value"] = text
-            case .image(let image):
-                let filename = "pinned_\(item.id).png"
-                let fileURL  = imagesDirectory.appendingPathComponent(filename)
-                if let pngData = image.pngData() {
-                    try? pngData.write(to: fileURL)
+            for item in snapshot {
+                var entry: [String: String] = [
+                    "date": Self.dateFormatter.string(from: item.date)
+                ]
+                switch item.content {
+                case .text(let text):
+                    entry["type"]  = "text"
+                    entry["value"] = text
+                case .image(let image):
+                    let filename = "pinned_\(item.id).png"
+                    let fileURL  = dir.appendingPathComponent(filename)
+                    // Skip rewriting an existing PNG — image bytes never change
+                    // for a given UUID, so the on-disk copy is already correct.
+                    if !FileManager.default.fileExists(atPath: fileURL.path),
+                       let pngData = image.pngData() {
+                        try? pngData.write(to: fileURL)
+                    }
+                    entry["type"]     = "image"
+                    entry["filename"] = filename
                 }
-                entry["type"]     = "image"
-                entry["filename"] = filename
+                if let desc = item.description, !desc.isEmpty {
+                    entry["description"] = desc
+                }
+                if item.isHidden {
+                    entry["hidden"] = "1"
+                }
+                if let tagID = item.tagID {
+                    entry["tagID"] = tagID.uuidString
+                }
+                indexEntries.append(entry)
             }
-            if let desc = item.description, !desc.isEmpty {
-                entry["description"] = desc
-            }
-            if item.isHidden {
-                entry["hidden"] = "1"
-            }
-            if let tagID = item.tagID {
-                entry["tagID"] = tagID.uuidString
-            }
-            indexEntries.append(entry)
-        }
 
-        if let data = try? JSONEncoder().encode(indexEntries) {
-            UserDefaults.standard.set(data, forKey: pinnedIndexKey)
+            if let data = try? JSONEncoder().encode(indexEntries) {
+                UserDefaults.standard.set(data, forKey: key)
+            }
         }
     }
 
@@ -373,27 +400,11 @@ class ClipboardManager: ObservableObject {
     func deleteHistoryItem(_ item: ClipboardItem) {
         history.removeAll { $0.id == item.id }
         saveHistory()
-        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
-    }
-
-    func deletePinnedItem(_ item: ClipboardItem) {
-        pinnedItems.removeAll { $0.id == item.id }
-        savePinnedItems()
-        pruneOrphanedImageFiles()
-        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
     }
 
     func clearHistory() {
         history.removeAll()
         saveHistory()
-        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
-    }
-
-    func clearPinnedItems() {
-        pinnedItems.removeAll()
-        savePinnedItems()
-        pruneOrphanedImageFiles()
-        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
     }
 
     func clearAllPinned() {
@@ -402,15 +413,6 @@ class ClipboardManager: ObservableObject {
         saveTags()
         savePinnedItems()
         pruneOrphanedImageFiles()
-        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
-    }
-
-    /// Removes all pinned items that belong to the given tag (keeps the tag itself).
-    func clearPinnedItems(withTagID tagID: UUID) {
-        pinnedItems.removeAll { $0.tagID == tagID }
-        savePinnedItems()
-        pruneOrphanedImageFiles()
-        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
     }
 
     private func checkPasteboard() {
@@ -449,7 +451,6 @@ class ClipboardManager: ObservableObject {
             history = Array(history.prefix(maxItems))
         }
         saveHistory()
-        NotificationCenter.default.post(name: .clipBoxHistoryChanged, object: nil)
     }
 
     // MARK: - Pasting
@@ -534,8 +535,3 @@ extension NSImage {
     }
 }
 
-// MARK: - Notification Names
-
-extension Notification.Name {
-    static let clipBoxHistoryChanged = Notification.Name("clipBoxHistoryChanged")
-}
