@@ -35,10 +35,17 @@ struct ClipboardRowView: View {
     /// from History. Returns the new tag's id so the popover can select it.
     var onCreateTag: ((String, String) -> UUID)? = nil
 
-    @State private var showingPinPopup: Bool = false
-    @State private var showingTagPopup: Bool = false
-    @State private var showingPreview:  Bool = false
-    @State private var isRevealed:      Bool = false
+    /// Pinned rows only: called to toggle privacy.
+    /// `isHidden: true` + description → make private.
+    /// `isHidden: false` → make public (description ignored).
+    var onTogglePrivacy: ((Bool, String?) -> Void)? = nil
+
+    @State private var showingPinPopup:      Bool   = false
+    @State private var showingTagPopup:      Bool   = false
+    @State private var showingPreview:       Bool   = false
+    @State private var isRevealed:           Bool   = false
+    @State private var showingPrivacyPopup:  Bool   = false
+    @State private var privacyDescription:   String = ""
 
     /// Threshold above which text gets its own preview button so the user can
     /// read the full content without paste-pulling it.
@@ -124,6 +131,40 @@ struct ClipboardRowView: View {
                     .popover(isPresented: $showingPreview, arrowEdge: .top) {
                         ItemPreviewPopover(item: item)
                     }
+                }
+            }
+
+            // ── Privacy toggle (pinned rows only) ────────────────────────
+            if let onTogglePrivacy {
+                let lockIcon  = item.isHidden ? "lock.fill" : "lock.open"
+                let lockColor = item.isHidden
+                    ? (isSelected ? Color.white.opacity(0.8)  : Color.accentColor.opacity(0.8))
+                    : (isSelected ? Color.white.opacity(0.45) : Color.secondary.opacity(0.45))
+
+                Button {
+                    if item.isHidden {
+                        onTogglePrivacy(false, nil)
+                    } else {
+                        privacyDescription = ""
+                        showingPrivacyPopup = true
+                    }
+                } label: {
+                    Image(systemName: lockIcon)
+                        .font(.system(size: 11))
+                        .foregroundColor(lockColor)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showingPrivacyPopup, arrowEdge: .top) {
+                    MakePrivatePopover(
+                        description: $privacyDescription,
+                        onConfirm: { desc in
+                            showingPrivacyPopup = false
+                            onTogglePrivacy(true, desc)
+                        },
+                        onCancel: { showingPrivacyPopup = false }
+                    )
                 }
             }
 
@@ -253,10 +294,6 @@ struct ClipboardRowView: View {
 
     private var hiddenContent: some View {
         HStack(spacing: 8) {
-            Image(systemName: "lock.fill")
-                .font(.system(size: 11))
-                .foregroundColor(isSelected ? .white.opacity(0.85) : .secondary)
-
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.description?.isEmpty == false ? item.description! : (item.image != nil ? "Private Image" : "Private"))
                     .font(.system(size: 12, weight: .medium))
@@ -272,7 +309,7 @@ struct ClipboardRowView: View {
                     }
                     .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
                 } else {
-                    Text(isRevealed ? (item.text ?? "") : "••••••••••")
+                    Text(isRevealed ? (item.text ?? "") : String(repeating: "•", count: min(max((item.text?.count ?? 8) / 3, 8), 28)))
                         .font(.system(
                             size:   11,
                             design: isRevealed ? .default : .monospaced
@@ -667,6 +704,60 @@ private struct PinOptionsPopover: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - MakePrivatePopover
+
+private struct MakePrivatePopover: View {
+
+    @Binding var description: String
+    let onConfirm: (String) -> Void
+    let onCancel:  () -> Void
+
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(.accentColor)
+                Text("Make Private")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+
+            TextField("Label (e.g. Gmail password)", text: $description)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12))
+                .focused($focused)
+                .onSubmit { confirm() }
+
+            Text("Content stays masked in the list but pastes as usual.")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel).controlSize(.small).keyboardShortcut(.cancelAction)
+                Button("Set Private", action: confirm)
+                    .controlSize(.small)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(12)
+        .frame(width: 260)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
+        }
+    }
+
+    private func confirm() {
+        let desc = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !desc.isEmpty else { return }
+        onConfirm(desc)
     }
 }
 

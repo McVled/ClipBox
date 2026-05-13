@@ -96,6 +96,14 @@ class ClipboardManager: ObservableObject {
         savePinnedItems()
     }
 
+    /// Toggles a pinned item's privacy. Pass `isHidden: true` with a description
+    /// to make it private, or `isHidden: false` (description ignored) to make it public.
+    func setPrivacy(item: ClipboardItem, isHidden: Bool, description: String?) {
+        guard let index = pinnedItems.firstIndex(where: { $0.id == item.id }) else { return }
+        pinnedItems[index] = item.withPrivacy(isHidden: isHidden, description: isHidden ? description : nil)
+        savePinnedItems()
+    }
+
     /// Updates a tag's name and colour in-place.
     func editTag(_ tag: ClipBoxTag, newName: String, newColorHex: String) {
         guard let i = tags.firstIndex(where: { $0.id == tag.id }) else { return }

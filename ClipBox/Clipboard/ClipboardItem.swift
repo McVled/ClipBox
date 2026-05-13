@@ -92,6 +92,19 @@ struct ClipboardItem: Identifiable {
         )
     }
 
+    /// Returns a copy with updated privacy, keeping the same identity and dedup key.
+    func withPrivacy(isHidden: Bool, description: String?) -> ClipboardItem {
+        ClipboardItem(
+            preservingID:     id,
+            content:          content,
+            date:             date,
+            description:      description,
+            isHidden:         isHidden,
+            tagID:            tagID,
+            deduplicationKey: deduplicationKey
+        )
+    }
+
     // MARK: - Helpers
 
     var text: String? {

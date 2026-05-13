@@ -561,6 +561,9 @@ struct PopupView: View {
             onCreateAndAssignTag: { name, colorHex in
                 let tag = clipboardManager.createTag(name: name, colorHex: colorHex)
                 clipboardManager.assignTag(tag.id, to: item.id)
+            },
+            onTogglePrivacy: { isHidden, description in
+                clipboardManager.setPrivacy(item: item, isHidden: isHidden, description: description)
             }
         )
     }
@@ -1026,12 +1029,12 @@ private struct TagEditPopover: View {
                 .focused($nameFocused)
                 .onSubmit { save() }
 
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 ForEach(ClipBoxTag.palette, id: \.self) { hex in
                     let selected = colorHex == hex
                     Circle()
                         .fill(Color(hex: hex) ?? .accentColor)
-                        .frame(width: 20, height: 20)
+                        .frame(width: 17, height: 17)
                         .overlay(Circle().strokeBorder(Color.white, lineWidth: selected ? 2 : 0))
                         .overlay(Circle().strokeBorder(Color.primary.opacity(0.25), lineWidth: 0.5))
                         .onTapGesture { colorHex = hex }
@@ -1046,7 +1049,7 @@ private struct TagEditPopover: View {
             }
         }
         .padding(12)
-        .frame(width: 220)
+        .frame(width: 260)
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { nameFocused = true }
         }
