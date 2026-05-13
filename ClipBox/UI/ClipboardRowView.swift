@@ -763,7 +763,7 @@ private struct MakePrivatePopover: View {
 
 // MARK: - ItemPreviewPopover
 
-private struct ItemPreviewPopover: View {
+struct ItemPreviewPopover: View {
 
     let item: ClipboardItem
 

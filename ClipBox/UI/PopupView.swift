@@ -721,11 +721,49 @@ struct PopupView: View {
         }
     }
 
-    @ViewBuilder
     private func deletedItemRow(_ item: ClipboardItem) -> some View {
+        DeletedItemRow(item: item) {
+            withAnimation { clipboardManager.recoverItem(item) }
+            if clipboardManager.deletedItems.isEmpty { showingRecentlyDeleted = false }
+        } onDelete: {
+            clipboardManager.permanentlyDelete(item)
+            if clipboardManager.deletedItems.isEmpty { showingRecentlyDeleted = false }
+        }
+    }
+}
+
+// MARK: - Deleted item row
+
+private struct DeletedItemRow: View {
+    let item: ClipboardItem
+    let onRecover: () -> Void
+    let onDelete: () -> Void
+
+    @State private var showingPreview = false
+    @State private var isRevealed = false
+
+    private static let longTextThreshold = 30
+
+    private var isPreviewable: Bool {
+        if item.isHidden { return true }
+        switch item.content {
+        case .image:       return true
+        case .text(let t): return t.count > Self.longTextThreshold
+        }
+    }
+
+    private var useInlineReveal: Bool {
+        guard item.isHidden else { return false }
+        switch item.content {
+        case .image:       return false
+        case .text(let t): return t.count <= Self.longTextThreshold
+        }
+    }
+
+    var body: some View {
         HStack(spacing: 6) {
 
-            // Content preview
+            // Content summary
             Group {
                 if item.isHidden {
                     HStack(spacing: 5) {
@@ -737,9 +775,20 @@ struct PopupView: View {
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundColor(.primary)
                                 .lineLimit(1)
-                            Text("••••••••••")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundColor(.secondary)
+                            if let img = item.image, isRevealed {
+                                Image(nsImage: img)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                                    .frame(width: 32, height: 20)
+                                    .clipShape(RoundedRectangle(cornerRadius: 2))
+                            } else {
+                                Text(isRevealed ? (item.text ?? "") : String(repeating: "•", count: min(max((item.text?.count ?? 8) / 3, 8), 28)))
+                                    .font(.system(size: 10, design: isRevealed ? .default : .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .animation(.easeInOut(duration: 0.1), value: isRevealed)
+                            }
                         }
                     }
                 } else {
@@ -775,13 +824,36 @@ struct PopupView: View {
                     .fixedSize()
             }
 
-            // Recover
-            Button {
-                withAnimation { clipboardManager.recoverItem(item) }
-                if clipboardManager.deletedItems.isEmpty {
-                    showingRecentlyDeleted = false
+            // Eye: press-and-hold for short private text; popover for everything else
+            if isPreviewable {
+                if useInlineReveal {
+                    Image(systemName: isRevealed ? "eye.fill" : "eye")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary.opacity(0.7))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { _ in isRevealed = true }
+                                .onEnded   { _ in isRevealed = false }
+                        )
+                } else {
+                    Button { showingPreview = true } label: {
+                        Image(systemName: "eye")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary.opacity(0.7))
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $showingPreview, arrowEdge: .trailing) {
+                        ItemPreviewPopover(item: item)
+                    }
                 }
-            } label: {
+            }
+
+            // Recover
+            Button { onRecover() } label: {
                 Image(systemName: "arrow.uturn.left")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary.opacity(0.8))
@@ -791,12 +863,7 @@ struct PopupView: View {
             .buttonStyle(.plain)
 
             // Delete Forever
-            Button {
-                clipboardManager.permanentlyDelete(item)
-                if clipboardManager.deletedItems.isEmpty {
-                    showingRecentlyDeleted = false
-                }
-            } label: {
+            Button { onDelete() } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 11))
                     .foregroundColor(.red.opacity(0.65))
@@ -809,6 +876,10 @@ struct PopupView: View {
         .padding(.vertical, 6)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.clear))
     }
+
+}
+
+extension PopupView {
 
     // MARK: - Empty state
 

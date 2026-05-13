@@ -104,7 +104,7 @@ class ClipboardManager: ObservableObject {
     /// to make it private, or `isHidden: false` (description ignored) to make it public.
     func setPrivacy(item: ClipboardItem, isHidden: Bool, description: String?) {
         guard let index = pinnedItems.firstIndex(where: { $0.id == item.id }) else { return }
-        pinnedItems[index] = item.withPrivacy(isHidden: isHidden, description: isHidden ? description : nil)
+        pinnedItems[index] = pinnedItems[index].withPrivacy(isHidden: isHidden, description: isHidden ? description : nil)
         savePinnedItems()
     }
 
@@ -180,6 +180,7 @@ class ClipboardManager: ObservableObject {
                 switch item.content {
                 case .text(let text):
                     indexEntries.append([
+                        "id":    item.id.uuidString,
                         "type":  "text",
                         "value": text,
                         "date":  Self.dateFormatter.string(from: item.date)
@@ -188,13 +189,12 @@ class ClipboardManager: ObservableObject {
                 case .image(let image):
                     let filename = "\(item.id).png"
                     let fileURL  = dir.appendingPathComponent(filename)
-                    // Image content is immutable per UUID, so once the file
-                    // exists we don't need to rewrite it on subsequent saves.
                     if !FileManager.default.fileExists(atPath: fileURL.path),
                        let pngData = image.pngData() {
                         try? pngData.write(to: fileURL)
                     }
                     indexEntries.append([
+                        "id":       item.id.uuidString,
                         "type":     "image",
                         "filename": filename,
                         "date":     Self.dateFormatter.string(from: item.date)
@@ -261,16 +261,26 @@ class ClipboardManager: ObservableObject {
                   let date    = formatter.date(from: dateStr)
             else { continue }
 
+            let savedID = entry["id"].flatMap { UUID(uuidString: $0) }
+
             switch type {
             case "text":
                 if let text = entry["value"] {
-                    loaded.append(ClipboardItem(content: .text(text), date: date))
+                    if let id = savedID {
+                        loaded.append(ClipboardItem(loadedWithID: id, content: .text(text), date: date))
+                    } else {
+                        loaded.append(ClipboardItem(content: .text(text), date: date))
+                    }
                 }
             case "image":
                 if let filename = entry["filename"] {
                     let fileURL = imagesDirectory.appendingPathComponent(filename)
                     if let image = NSImage(contentsOf: fileURL) {
-                        loaded.append(ClipboardItem(content: .image(image), date: date))
+                        if let id = savedID {
+                            loaded.append(ClipboardItem(loadedWithID: id, content: .image(image), date: date))
+                        } else {
+                            loaded.append(ClipboardItem(content: .image(image), date: date))
+                        }
                     }
                 }
             default:
@@ -318,6 +328,7 @@ class ClipboardManager: ObservableObject {
 
             for item in snapshot {
                 var entry: [String: String] = [
+                    "id":   item.id.uuidString,
                     "date": Self.dateFormatter.string(from: item.date)
                 ]
                 switch item.content {
@@ -327,8 +338,6 @@ class ClipboardManager: ObservableObject {
                 case .image(let image):
                     let filename = "pinned_\(item.id).png"
                     let fileURL  = dir.appendingPathComponent(filename)
-                    // Skip rewriting an existing PNG — image bytes never change
-                    // for a given UUID, so the on-disk copy is already correct.
                     if !FileManager.default.fileExists(atPath: fileURL.path),
                        let pngData = image.pngData() {
                         try? pngData.write(to: fileURL)
@@ -368,6 +377,7 @@ class ClipboardManager: ObservableObject {
                   let date    = formatter.date(from: dateStr)
             else { continue }
 
+            let savedID     = entry["id"].flatMap { UUID(uuidString: $0) }
             let description = entry["description"]
             let isHidden    = entry["hidden"] == "1"
             let tagID       = entry["tagID"].flatMap { UUID(uuidString: $0) }
@@ -375,25 +385,25 @@ class ClipboardManager: ObservableObject {
             switch type {
             case "text":
                 if let text = entry["value"] {
-                    loaded.append(ClipboardItem(
-                        content:     .text(text),
-                        date:        date,
-                        description: description,
-                        isHidden:    isHidden,
-                        tagID:       tagID
-                    ))
+                    if let id = savedID {
+                        loaded.append(ClipboardItem(loadedWithID: id, content: .text(text), date: date,
+                                                    description: description, isHidden: isHidden, tagID: tagID))
+                    } else {
+                        loaded.append(ClipboardItem(content: .text(text), date: date,
+                                                    description: description, isHidden: isHidden, tagID: tagID))
+                    }
                 }
             case "image":
                 if let filename = entry["filename"] {
                     let fileURL = imagesDirectory.appendingPathComponent(filename)
                     if let image = NSImage(contentsOf: fileURL) {
-                        loaded.append(ClipboardItem(
-                            content:     .image(image),
-                            date:        date,
-                            description: description,
-                            isHidden:    isHidden,
-                            tagID:       tagID
-                        ))
+                        if let id = savedID {
+                            loaded.append(ClipboardItem(loadedWithID: id, content: .image(image), date: date,
+                                                        description: description, isHidden: isHidden, tagID: tagID))
+                        } else {
+                            loaded.append(ClipboardItem(content: .image(image), date: date,
+                                                        description: description, isHidden: isHidden, tagID: tagID))
+                        }
                     }
                 }
             default:
@@ -458,6 +468,7 @@ class ClipboardManager: ObservableObject {
             pinnedItems.insert(recovered, at: 0)
             savePinnedItems()
         } else {
+            history.removeAll { $0.deduplicationKey == recovered.deduplicationKey }
             history.insert(recovered, at: 0)
             if history.count > maxItems { history = Array(history.prefix(maxItems)) }
             saveHistory()
@@ -467,11 +478,15 @@ class ClipboardManager: ObservableObject {
     }
 
     /// Recovers every item in Recently Deleted in one shot.
+    /// History items that exceed maxItems are placed back in Recently Deleted
+    /// rather than being silently discarded.
     func recoverAllItems() {
         let toRecover = deletedItems
         deletedItems.removeAll()
 
         var didCreateTag = false
+        var overflowBack: [ClipboardItem] = []
+
         for item in toRecover {
             let recovered = item.withRecovery()
             if item.deletedFromPinned {
@@ -486,8 +501,16 @@ class ClipboardManager: ObservableObject {
             }
         }
 
+        if history.count > maxItems {
+            let excess = Array(history.dropFirst(maxItems))
+            history = Array(history.prefix(maxItems))
+            overflowBack = excess.map {
+                $0.withDeletion(tagName: nil, tagColor: nil, fromPinned: false)
+            }
+            deletedItems.insert(contentsOf: overflowBack, at: 0)
+        }
+
         if didCreateTag { saveTags() }
-        if history.count > maxItems { history = Array(history.prefix(maxItems)) }
         saveHistory()
         savePinnedItems()
         saveDeletedItems()
@@ -512,7 +535,7 @@ class ClipboardManager: ObservableObject {
         let now = Date()
         let before = deletedItems.count
         deletedItems.removeAll { item in
-            guard let at = item.deletedAt else { return true }
+            guard let at = item.deletedAt else { return false }
             return now.timeIntervalSince(at) > sevenDays
         }
         if deletedItems.count != before {
