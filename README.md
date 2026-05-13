@@ -1,6 +1,10 @@
 # ClipBox
 
-A lightweight macOS clipboard history manager that runs entirely in the background. Press **⌘⇧V** (or your custom shortcut) from any app to summon a floating popup near your cursor, browse your clipboard history with text and images, pin important items to keep them forever, organize them with color-coded tags, and paste any of them back with a single keystroke.
+ClipBox is a lightweight macOS **clipboard history manager** that runs entirely in the background, keeping a full record of everything you copy — text and images — so nothing is ever lost.
+
+Press **⌘⇧V** (or your custom shortcut) from any app to summon a floating popup near your cursor. Browse your clipboard history, pin important items to keep them forever, organize them with color-coded tags, and paste any of them back with a single keystroke.
+
+**ClipBox also works as a lightweight password manager.** Pin any sensitive text — passwords, API keys, secret tokens — as a **private item**. The row shows only bullet dots (scaled to the real length) and a label you choose; the actual content is never displayed but pastes normally when you need it. Items are grouped by tag, hidden behind a press-and-hold or popover reveal, and protected from accidental deletion by the Recently Deleted safety net.
 
 ---
 
@@ -15,17 +19,28 @@ A lightweight macOS clipboard history manager that runs entirely in the backgrou
 ### Pinned Items
 - **Pin anything permanently** — Pin any item from History to keep it in the Pinned tab forever, unaffected by the history limit or Clear.
 - **Public pin** — Item displays and pastes normally.
-- **Private pin** — The row shows bullets (••••••••) and a custom label you choose. The real content is still pasted as-is — hiding is purely visual.
+- **Private pin** — The row shows bullets scaled to the text length so you can tell at a glance how long the content is. A custom label is shown instead of content. The real content is still pasted as-is — hiding is purely visual.
+- **Privacy toggle** — A lock button sits next to the tag flag on every pinned row. Closed lock = private, open lock = public. Tap to switch instantly; going public→private opens a label-entry dialog.
+- **Press-and-hold reveal** — For short private items (≤ 40 chars), press and hold the eye icon to momentarily reveal the text; release to hide it again.
+- **Popover reveal** — For longer private items, the eye icon opens a floating preview popover.
 - **Tag on pin** — Choose or create a tag directly from the pin dialog.
 
 ### Tags
-- **Color-coded folders** — Group pinned items into named tags, each with a color chosen from a 10-color palette.
+- **Color-coded folders** — Group pinned items into named tags, each with a color chosen from a 10-color palette (ordered warm → cool: red, orange, yellow, brown, green, teal, cyan, blue, light pink, hot pink).
 - **Tag detail view** — Click a tag flag to see only its items; navigate back with the back button or **Esc**.
 - **Assign after pinning** — Click the flag icon on any pinned row to change or remove its tag at any time.
 - **Inline tag creation** — Create a new tag directly from the pin dialog or the flag popover, without leaving your workflow.
 - **Edit tags** — Rename or recolor a tag from the detail view header.
 - **Delete tags** — Choose to move items to Untagged or delete them together with the tag.
-- **Clear tag** — Clearing from inside a tag detail view removes the tag and all its items.
+- **Clear tag** — Clearing from inside a tag detail view sends the tag and all its items to Recently Deleted.
+
+### Recently Deleted
+- **Soft-delete** — Nothing is permanently erased immediately. Deleting a history item, unpinning, or using any Clear button moves items to Recently Deleted first.
+- **7-day auto-expiry** — Items are automatically and permanently removed 7 days after deletion. The footer shows "Auto-Clean in Xd" so you always know how soon the next cleanup is.
+- **Recover items** — Restore a single item with the ↩ button, or restore everything at once with **Recover All** (confirmation required).
+- **Delete forever** — Remove a single item permanently with the 🗑 button, or wipe everything with **Delete All** (confirmation required).
+- **Tag restoration** — If a recovered item belonged to a tag that was since deleted, the tag is recreated automatically so the item lands back exactly where it was.
+- **Smart badge** — The "Recently Deleted" badge in the footer is grayed-out when empty and fills with a solid background when items are waiting, making it easy to spot.
 
 ### Search
 - **Type-ahead** — Start typing anywhere in the popup to instantly filter the visible list.
@@ -115,10 +130,18 @@ ClipBox will prompt for Accessibility access. This is required for the global sh
 | Action | How |
 |--------|-----|
 | Pin an item | Hover a history row → click the **pin icon** → choose Public or Private, optionally add a tag → **Pin** |
-| Unpin an item | In Pinned tab: click the **✕** icon; in History: pin icon → **Unpin** |
-| Delete from history | Hover a row → click the **✕** icon |
+| Unpin an item | In Pinned tab: click the **✕** icon (moves to Recently Deleted); in History: pin icon → **Unpin** |
+| Toggle privacy on a pin | Click the **lock icon** on the pinned row (open = public, closed = private) |
+| Reveal a short private item | Press and hold the **eye icon** |
+| Preview a long private item | Click the **eye icon** to open a popover |
+| Delete from history | Hover a row → click the **✕** icon (moves to Recently Deleted) |
 | Delete selected item | **⌘⌫** or **⌦** |
-| Clear all in active view | **Clear** button in the header → confirm |
+| Clear all in active view | **Clear** button in the header → confirm (moves to Recently Deleted) |
+| Open Recently Deleted | Click the **Recently Deleted** badge in the footer |
+| Recover a deleted item | In Recently Deleted → click **↩** on the row |
+| Delete an item forever | In Recently Deleted → click **🗑** on the row |
+| Recover all | In Recently Deleted → **Recover All** → confirm |
+| Delete all forever | In Recently Deleted → **Delete All** → confirm |
 
 ### Tags
 
@@ -158,7 +181,9 @@ System Settings → General → Login Items → **+** → select `ClipBox.app`.
 
 **Tags** — Tags are stored as JSON in UserDefaults (`com.clipbox.tags`). Each pinned item carries a `tagID` that links it to a tag. Tag operations (create, edit, delete, assign) update both the tag list and the affected items atomically.
 
-**Pinned items** — Stored in a separate persistent list, independent of the history limit. A private pin records a user-supplied description and an `isHidden` flag; real content is preserved and pasted normally — the masking is purely visual.
+**Pinned items** — Stored in a separate persistent list, independent of the history limit. A private pin records a user-supplied description and an `isHidden` flag; real content is preserved and pasted normally — the masking is purely visual. The number of bullet dots scales proportionally with the actual text length so the row gives a size hint without revealing content.
+
+**Recently Deleted** — Every delete or clear operation performs a soft-delete: items are moved to `deletedItems` with a `deletedAt` timestamp and a snapshot of their tag name/color. On launch, items older than 7 days are pruned automatically. Recovering an item restores it to its original list (history or pinned); if the original tag no longer exists, it is recreated from the snapshot so the item lands back in its original folder. All three arrays (history, pinned, deleted) are persisted independently and share the same image file pool — orphaned image files are pruned after any operation that can remove items.
 
 **Global hotkey** — `HotkeyManager` installs a `CGEventTap` at the session level, seeing keypresses before any app. The configured shortcut is saved as JSON in UserDefaults and restored on launch. Only the exact modifier combination matches — **⌘V** won't accidentally trigger a **⌘⇧V** shortcut.
 
