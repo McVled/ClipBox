@@ -35,15 +35,43 @@ struct ClipboardRowView: View {
     /// from History. Returns the new tag's id so the popover can select it.
     var onCreateTag: ((String, String) -> UUID)? = nil
 
-    @State private var isRevealed:      Bool = false
     @State private var showingPinPopup: Bool = false
     @State private var showingTagPopup: Bool = false
+    @State private var showingPreview:  Bool = false
+    @State private var isRevealed:      Bool = false
+
+    /// Threshold above which text gets its own preview button so the user can
+    /// read the full content without paste-pulling it.
+    private static let longTextThreshold = 30
 
     private var showsHiddenLayout: Bool { isPinned && item.isHidden }
 
     private var currentTag: ClipBoxTag? {
         guard let tagID = item.tagID else { return nil }
         return tags.first(where: { $0.id == tagID })
+    }
+
+    /// True when the item benefits from a popover preview: images (to see at
+    /// saved size), private items (to reveal the masked content), or text
+    /// long enough that the row truncates it.
+    private var isPreviewable: Bool {
+        if item.isHidden { return true }
+        switch item.content {
+        case .image:        return true
+        case .text(let t):  return t.count > Self.longTextThreshold
+        }
+    }
+
+    /// True when clicking the eye should reveal the content inline in the row
+    /// instead of opening a popover.  Used for private *text* short enough to
+    /// fit on the row — no point firing up a separate popover for "secret123".
+    /// Private images and long private text still use the popover.
+    private var useInlineReveal: Bool {
+        guard item.isHidden else { return false }
+        switch item.content {
+        case .image:        return false
+        case .text(let t):  return t.count <= Self.longTextThreshold
+        }
     }
 
     var body: some View {
@@ -70,18 +98,33 @@ struct ClipboardRowView: View {
                 .padding(.horizontal, 4)
                 .fixedSize()
 
-            // ── Eye (hidden items only) ───────────────────────────────────
-            if showsHiddenLayout {
-                Image(systemName: isRevealed ? "eye.fill" : "eye")
-                    .font(.system(size: 11))
-                    .foregroundColor(isSelected ? .white.opacity(0.7) : .secondary.opacity(0.7))
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { _ in isRevealed = true  }
-                            .onEnded   { _ in isRevealed = false }
-                    )
+            // ── Eye button: press-and-hold reveal for short private text,
+            //    popover preview for images / long private text.
+            if isPreviewable {
+                if useInlineReveal {
+                    Image(systemName: isRevealed ? "eye.fill" : "eye")
+                        .font(.system(size: 11))
+                        .foregroundColor(isSelected ? .white.opacity(0.7) : .secondary.opacity(0.7))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { _ in isRevealed = true }
+                                .onEnded   { _ in isRevealed = false }
+                        )
+                } else {
+                    Button { showingPreview = true } label: {
+                        Image(systemName: "eye")
+                            .font(.system(size: 11))
+                            .foregroundColor(isSelected ? .white.opacity(0.7) : .secondary.opacity(0.7))
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $showingPreview, arrowEdge: .top) {
+                        ItemPreviewPopover(item: item)
+                    }
+                }
             }
 
             // ── Tag flag (pinned rows only) ───────────────────────────────
@@ -221,31 +264,17 @@ struct ClipboardRowView: View {
                     .lineLimit(1)
 
                 if let image = item.image {
-                    if isRevealed {
-                        Image(nsImage: image)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: 44, height: 36)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 4)
-                                    .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
-                            )
-                            .animation(.easeInOut(duration: 0.1), value: isRevealed)
-                    } else {
-                        HStack(spacing: 4) {
-                            Image(systemName: "photo")
-                                .font(.system(size: 10))
-                            Text("\(Int(image.size.width)) × \(Int(image.size.height))")
-                                .font(.system(size: 11))
-                        }
-                        .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
-                        .animation(.easeInOut(duration: 0.1), value: isRevealed)
+                    HStack(spacing: 4) {
+                        Image(systemName: "photo")
+                            .font(.system(size: 10))
+                        Text("\(Int(image.size.width)) × \(Int(image.size.height))")
+                            .font(.system(size: 11))
                     }
+                    .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
                 } else {
                     Text(isRevealed ? (item.text ?? "") : "••••••••••")
                         .font(.system(
-                            size: 11,
+                            size:   11,
                             design: isRevealed ? .default : .monospaced
                         ))
                         .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
@@ -314,7 +343,7 @@ private struct TagAssignPopover: View {
             }
         }
         .padding(12)
-        .frame(width: 200)
+        .frame(width: 260)
     }
 
     private func tagRow(icon: String, color: Color, label: String,
@@ -425,7 +454,7 @@ private struct PinOptionsPopover: View {
             }
         }
         .padding(12)
-        .frame(width: 240)
+        .frame(width: 280)
     }
 
     // MARK: Already-pinned mode
@@ -551,7 +580,7 @@ private struct PinOptionsPopover: View {
                             let sel = newTagColorHex == hex
                             Circle()
                                 .fill(Color(hex: hex) ?? .accentColor)
-                                .frame(width: 16, height: 16)
+                                .frame(width: 17, height: 17)
                                 .overlay(Circle().strokeBorder(Color.white, lineWidth: sel ? 2 : 0))
                                 .overlay(Circle().strokeBorder(Color.primary.opacity(0.25), lineWidth: 0.5))
                                 .onTapGesture { newTagColorHex = hex }
@@ -638,6 +667,68 @@ private struct PinOptionsPopover: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - ItemPreviewPopover
+
+private struct ItemPreviewPopover: View {
+
+    let item: ClipboardItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            switch item.content {
+            case .text(let text):
+                ScrollView(.vertical, showsIndicators: true) {
+                    Text(text)
+                        .font(.system(size: 13))
+                        .foregroundColor(.primary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(2)
+                }
+                .frame(width: 380, height: 240)
+
+                caption(extra: "\(text.count) characters")
+
+            case .image(let image):
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 540, maxHeight: 420)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
+                    )
+
+                caption(extra: "\(Int(image.size.width)) × \(Int(image.size.height))")
+            }
+        }
+        .padding(12)
+    }
+
+    @ViewBuilder
+    private func caption(extra: String) -> some View {
+        HStack(spacing: 4) {
+            if item.isHidden {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(.accentColor)
+            }
+            if let desc = item.description, !desc.isEmpty {
+                Text(desc)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.primary)
+                Text("·").foregroundColor(.secondary.opacity(0.4))
+            }
+            Text(extra)
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+        }
+        .lineLimit(1)
     }
 }
 
