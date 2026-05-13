@@ -232,6 +232,12 @@ struct PopupView: View {
                 // Left: Recently Deleted badge
                 let hasItems = !clipboardManager.deletedItems.isEmpty
                 Button {
+                    // Prune expired items so a long-running session still
+                    // sees auto-cleanup. If that empties the list (every item
+                    // had just crossed the 7-day mark), don't open the view —
+                    // there's nothing to show.
+                    clipboardManager.pruneExpiredDeletedItems()
+                    guard !clipboardManager.deletedItems.isEmpty else { return }
                     withAnimation(.easeInOut(duration: 0.22)) {
                         showingRecentlyDeleted = true
                     }
@@ -297,7 +303,7 @@ struct PopupView: View {
             Button("Clear", role: .destructive, action: triggerClearWithAnimation)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This action cannot be undone.")
+            Text("Items will be moved to Recently Deleted for 7 days.")
         }
         .alert(tagDeleteConfirmTitle, isPresented: $showingTagDeleteConfirm) {
             Button("Move to Untagged") {
@@ -760,6 +766,11 @@ private struct DeletedItemRow: View {
         }
     }
 
+    private var privacyTitle: String {
+        if let d = item.description, !d.isEmpty { return d }
+        return item.image != nil ? "Private Image" : "Private"
+    }
+
     var body: some View {
         HStack(spacing: 6) {
 
@@ -771,7 +782,7 @@ private struct DeletedItemRow: View {
                             .font(.system(size: 10))
                             .foregroundColor(.accentColor)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(item.description ?? (item.image != nil ? "Private Image" : "Private"))
+                            Text(privacyTitle)
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundColor(.primary)
                                 .lineLimit(1)
@@ -1004,10 +1015,14 @@ extension PopupView {
         let tags = currentTags
         let inTagNav = selectedTab == .pinned && activeTagID == nil && selectedTagIndex != nil
 
-        // Escape: clear search → back from tag view → back from settings → close popup
+        // Escape unwinds one layer at a time:
+        // Settings → main, Recently Deleted → main, search → no search,
+        // tag detail → top-level pinned, otherwise close the popup.
         if keyCode == 53 {
             if showingSettings {
                 withAnimation(.easeInOut(duration: 0.22)) { showingSettings = false }
+            } else if showingRecentlyDeleted {
+                withAnimation(.easeInOut(duration: 0.22)) { showingRecentlyDeleted = false }
             } else if !searchText.isEmpty {
                 searchText    = ""
                 selectedIndex = 0
@@ -1022,7 +1037,10 @@ extension PopupView {
             return
         }
 
-        if showingSettings { return }
+        // Lock out other keys while a sub-view (Settings / Recently Deleted)
+        // is presented — otherwise arrow keys, Delete, type-ahead, etc. would
+        // operate on the hidden main view behind it.
+        if showingSettings || showingRecentlyDeleted { return }
 
         // ← Arrow
         if keyCode == 123 {
@@ -1198,13 +1216,15 @@ extension PopupView {
     private static func isReservedShortcut(_ s: Shortcut) -> Bool {
         guard s.command, !s.shift, !s.option, !s.control else { return false }
         //  0 = A (Select All)
+        //  4 = H (Hide Application)
         //  6 = Z (Undo)
         //  7 = X (Cut)
         //  8 = C (Copy)
         //  9 = V (Paste)
         // 12 = Q (Quit)
         // 13 = W (Close Window)
-        return [0, 6, 7, 8, 9, 12, 13].contains(s.keyCode)
+        // 46 = M (Minimize Window)
+        return [0, 4, 6, 7, 8, 9, 12, 13, 46].contains(s.keyCode)
     }
 
     private func specialKeyName(for keyCode: UInt16) -> String? {

@@ -252,13 +252,12 @@ class ClipboardManager: ObservableObject {
               let entries = try? JSONDecoder().decode([[String: String]].self, from: data)
         else { return }
 
-        let formatter = ISO8601DateFormatter()
         var loaded: [ClipboardItem] = []
 
         for entry in entries {
             guard let type    = entry["type"],
                   let dateStr = entry["date"],
-                  let date    = formatter.date(from: dateStr)
+                  let date    = Self.dateFormatter.date(from: dateStr)
             else { continue }
 
             let savedID = entry["id"].flatMap { UUID(uuidString: $0) }
@@ -368,13 +367,12 @@ class ClipboardManager: ObservableObject {
               let entries = try? JSONDecoder().decode([[String: String]].self, from: data)
         else { return }
 
-        let formatter = ISO8601DateFormatter()
         var loaded: [ClipboardItem] = []
 
         for entry in entries {
             guard let type    = entry["type"],
                   let dateStr = entry["date"],
-                  let date    = formatter.date(from: dateStr)
+                  let date    = Self.dateFormatter.date(from: dateStr)
             else { continue }
 
             let savedID     = entry["id"].flatMap { UUID(uuidString: $0) }
@@ -465,6 +463,10 @@ class ClipboardManager: ObservableObject {
                 tags.append(ClipBoxTag(id: tagID, name: name, colorHex: color))
                 saveTags()
             }
+            // Dedup: if the same content was re-pinned while this item was in
+            // Recently Deleted, drop the existing pin so we don't end up with
+            // two pins of identical content.
+            pinnedItems.removeAll { $0.deduplicationKey == recovered.deduplicationKey }
             pinnedItems.insert(recovered, at: 0)
             savePinnedItems()
         } else {
@@ -487,7 +489,9 @@ class ClipboardManager: ObservableObject {
         var didCreateTag = false
         var overflowBack: [ClipboardItem] = []
 
-        for item in toRecover {
+        // Iterate oldest-first so the most recently deleted item ends up at
+        // index 0 after we insert each recovered item at position 0.
+        for item in toRecover.reversed() {
             let recovered = item.withRecovery()
             if item.deletedFromPinned {
                 if let tagID = item.tagID, !tags.contains(where: { $0.id == tagID }),
@@ -495,8 +499,10 @@ class ClipboardManager: ObservableObject {
                     tags.append(ClipBoxTag(id: tagID, name: name, colorHex: color))
                     didCreateTag = true
                 }
+                pinnedItems.removeAll { $0.deduplicationKey == recovered.deduplicationKey }
                 pinnedItems.insert(recovered, at: 0)
             } else {
+                history.removeAll { $0.deduplicationKey == recovered.deduplicationKey }
                 history.insert(recovered, at: 0)
             }
         }
@@ -530,7 +536,9 @@ class ClipboardManager: ObservableObject {
     }
 
     /// Removes items that have been in Recently Deleted for more than 7 days.
-    private func pruneExpiredDeletedItems() {
+    /// Called at launch and from the UI whenever the user opens the Recently
+    /// Deleted view, so long-running sessions still see auto-cleanup.
+    func pruneExpiredDeletedItems() {
         let sevenDays: TimeInterval = 7 * 24 * 3600
         let now = Date()
         let before = deletedItems.count
@@ -550,15 +558,14 @@ class ClipboardManager: ObservableObject {
         let snapshot = deletedItems
         let dir      = imagesDirectory
         let key      = deletedIndexKey
-        let fmt      = Self.dateFormatter
         saveQueue.async {
             var entries: [[String: String]] = []
             for item in snapshot {
                 var e: [String: String] = [
                     "id":   item.id.uuidString,
-                    "date": fmt.string(from: item.date)
+                    "date": Self.dateFormatter.string(from: item.date)
                 ]
-                if let at = item.deletedAt { e["deletedAt"] = fmt.string(from: at) }
+                if let at = item.deletedAt { e["deletedAt"] = Self.dateFormatter.string(from: at) }
                 if let n  = item.deletedTagName  { e["deletedTagName"]  = n }
                 if let c  = item.deletedTagColor { e["deletedTagColor"] = c }
                 if let t  = item.tagID           { e["tagID"]           = t.uuidString }
@@ -594,18 +601,17 @@ class ClipboardManager: ObservableObject {
               let entries = try? JSONDecoder().decode([[String: String]].self, from: data)
         else { return }
 
-        let fmt = ISO8601DateFormatter()
         var loaded: [ClipboardItem] = []
 
         for e in entries {
             guard let type    = e["type"],
                   let dateStr = e["date"],
-                  let date    = fmt.date(from: dateStr),
+                  let date    = Self.dateFormatter.date(from: dateStr),
                   let idStr   = e["id"],
                   let id      = UUID(uuidString: idStr)
             else { continue }
 
-            let deletedAt       = e["deletedAt"].flatMap { fmt.date(from: $0) }
+            let deletedAt       = e["deletedAt"].flatMap { Self.dateFormatter.date(from: $0) }
             let deletedTagName  = e["deletedTagName"]
             let deletedTagColor = e["deletedTagColor"]
             let tagID           = e["tagID"].flatMap { UUID(uuidString: $0) }

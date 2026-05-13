@@ -58,6 +58,13 @@ struct ClipboardRowView: View {
         return tags.first(where: { $0.id == tagID })
     }
 
+    /// Title shown above the masked content for a private item: the user's
+    /// description if they set one, otherwise a generic fallback.
+    private var privacyTitle: String {
+        if let d = item.description, !d.isEmpty { return d }
+        return item.image != nil ? "Private Image" : "Private"
+    }
+
     /// True when the item benefits from a popover preview: images (to see at
     /// saved size), private items (to reveal the masked content), or text
     /// long enough that the row truncates it.
@@ -295,7 +302,7 @@ struct ClipboardRowView: View {
     private var hiddenContent: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(item.description?.isEmpty == false ? item.description! : (item.image != nil ? "Private Image" : "Private"))
+                Text(privacyTitle)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(isSelected ? .white : .primary)
                     .lineLimit(1)
@@ -825,6 +832,23 @@ struct ItemPreviewPopover: View {
 
 // MARK: - Date display
 
+private enum ClipBoxDateFormatters {
+    /// DateFormatter is expensive to allocate (~ms each), so cache the two
+    /// formats we need at file scope and reuse them for every row render.
+    static let time: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .none
+        f.timeStyle = .short
+        return f
+    }()
+
+    static let day: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "d MMM"
+        return f
+    }()
+}
+
 private extension Date {
     var clipBoxDisplay: String {
         let seconds = Date().timeIntervalSince(self)
@@ -833,14 +857,11 @@ private extension Date {
         } else if seconds < 3600 {
             return "\(Int(seconds / 60))m ago"
         } else if Calendar.current.isDateInToday(self) {
-            let f = DateFormatter(); f.dateStyle = .none; f.timeStyle = .short
-            return f.string(from: self)
+            return ClipBoxDateFormatters.time.string(from: self)
         } else if Calendar.current.isDateInYesterday(self) {
-            let f = DateFormatter(); f.dateStyle = .none; f.timeStyle = .short
-            return "Yest " + f.string(from: self)
+            return "Yest " + ClipBoxDateFormatters.time.string(from: self)
         } else {
-            let f = DateFormatter(); f.dateFormat = "d MMM"
-            return f.string(from: self)
+            return ClipBoxDateFormatters.day.string(from: self)
         }
     }
 }
