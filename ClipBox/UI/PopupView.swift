@@ -41,6 +41,9 @@ struct PopupView: View {
     @State private var selectedTagIndex: Int? = nil
 
     @State private var searchText: String = ""
+    @State private var showingRecentlyDeleted: Bool = false
+    @State private var showingDeleteAllConfirm: Bool = false
+    @State private var showingRecoverAllConfirm: Bool = false
 
     // MARK: - Callbacks
 
@@ -51,7 +54,10 @@ struct PopupView: View {
 
     var body: some View {
         ZStack {
-            if showingSettings {
+            if showingRecentlyDeleted {
+                recentlyDeletedView
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            } else if showingSettings {
                 SettingsView(
                     shortcut:      $shortcut,
                     followCursor:  $followCursor,
@@ -222,40 +228,66 @@ struct PopupView: View {
 
             // ── Footer ───────────────────────────────────────────────────
             Divider()
-            ZStack {
-                HStack(spacing: 4) {
-                    Text("\(clipboardManager.history.count)").fontWeight(.medium)
-                    Text("history")
-                    Text("·").foregroundColor(.secondary.opacity(0.35))
-                    Text("\(clipboardManager.pinnedItems.count)").fontWeight(.medium)
-                    Text("pinned")
-                    if !clipboardManager.tags.isEmpty {
-                        Text("·").foregroundColor(.secondary.opacity(0.35))
-                        Text("\(clipboardManager.tags.count)").fontWeight(.medium)
-                        Text("tag\(clipboardManager.tags.count == 1 ? "" : "s")")
+            HStack(spacing: 8) {
+                // Left: Recently Deleted badge
+                let hasItems = !clipboardManager.deletedItems.isEmpty
+                Button {
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        showingRecentlyDeleted = true
                     }
+                } label: {
+                    Text("Recently Deleted")
+                        .font(.system(size: 10, weight: hasItems ? .medium : .regular))
+                        .foregroundColor(hasItems ? .white : .secondary.opacity(0.5))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(hasItems ? Color.secondary.opacity(0.45) : Color.clear)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(hasItems ? Color.clear : Color.secondary.opacity(0.35), lineWidth: 0.8)
+                        )
+                        .contentShape(Rectangle())
                 }
-                .font(.system(size: 12))
-                .foregroundColor(searchText.isEmpty ? .secondary.opacity(0.6) : .clear)
-                .frame(maxWidth: .infinity)
+                .buttonStyle(.plain)
+                .disabled(!hasItems)
 
-                if !searchText.isEmpty {
-                    HStack(spacing: 6) {
+                Spacer()
+
+                // Right: item counts or active search indicator
+                if searchText.isEmpty {
+                    HStack(spacing: 4) {
+                        Text("\(clipboardManager.history.count)").fontWeight(.medium)
+                        Text("history")
+                        Text("·").foregroundColor(.secondary.opacity(0.35))
+                        Text("\(clipboardManager.pinnedItems.count)").fontWeight(.medium)
+                        Text("pinned")
+                        if !clipboardManager.tags.isEmpty {
+                            Text("·").foregroundColor(.secondary.opacity(0.35))
+                            Text("\(clipboardManager.tags.count)").fontWeight(.medium)
+                            Text("tag\(clipboardManager.tags.count == 1 ? "" : "s")")
+                        }
+                    }
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary.opacity(0.6))
+                } else {
+                    HStack(spacing: 5) {
                         Image(systemName: "magnifyingglass")
-                            .font(.system(size: 12))
+                            .font(.system(size: 11))
                             .foregroundColor(.accentColor)
                         Text(searchText)
-                            .font(.system(size: 12))
+                            .font(.system(size: 11))
                             .foregroundColor(.primary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .lineLimit(1)
                         Button { searchText = ""; selectedIndex = 0 } label: {
                             Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 13))
+                                .font(.system(size: 12))
                                 .foregroundColor(.secondary.opacity(0.5))
                         }
                         .buttonStyle(.plain)
                     }
-                    .frame(maxWidth: .infinity)
                 }
             }
             .padding(.horizontal, 12)
@@ -281,6 +313,15 @@ struct PopupView: View {
                 Text("What should happen to the \(count) item\(count == 1 ? "" : "s") in this tag?")
             }
         }
+    }
+
+    private var nextAutoCleanDays: Int? {
+        let sevenDays: TimeInterval = 7 * 24 * 3600
+        let now = Date()
+        return clipboardManager.deletedItems
+            .compactMap { $0.deletedAt }
+            .map { max(0, Int(ceil((sevenDays - now.timeIntervalSince($0)) / 86400))) }
+            .min()
     }
 
     private var clearConfirmTitle: String {
@@ -553,7 +594,7 @@ struct PopupView: View {
             isSelected: index == selectedIndex && selectedTagIndex == nil,
             isPinned:   true,
             onSelect:   { onPaste(item) },
-            onUnpin:    { clipboardManager.unpinItem(item) },
+            onUnpin:    { clipboardManager.softDeletePinnedItem(item) },
             tags:       clipboardManager.tags,
             onAssignTag: { tagID in
                 clipboardManager.assignTag(tagID, to: item.id)
@@ -566,6 +607,207 @@ struct PopupView: View {
                 clipboardManager.setPrivacy(item: item, isHidden: isHidden, description: description)
             }
         )
+    }
+
+    // MARK: - Recently Deleted view
+
+    private var recentlyDeletedView: some View {
+        VStack(spacing: 0) {
+
+            // ── Header ────────────────────────────────────────────────────
+            ZStack {
+                Text("Recently Deleted")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.primary.opacity(0.75))
+
+                HStack {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.22)) {
+                            showingRecentlyDeleted = false
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("Back")
+                                .font(.system(size: 11))
+                        }
+                        .foregroundColor(.secondary)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+
+            Divider()
+
+            // ── List ──────────────────────────────────────────────────────
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVStack(spacing: 2) {
+                    ForEach(clipboardManager.deletedItems) { item in
+                        deletedItemRow(item)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
+            // ── Footer ───────────────────────────────────────────────────
+            Divider()
+            HStack(spacing: 8) {
+                // Left: Delete All + Recover All
+                HStack(spacing: 10) {
+                    Button {
+                        showingDeleteAllConfirm = true
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "trash")
+                                .font(.system(size: 10))
+                            Text("Delete All")
+                                .font(.system(size: 11))
+                        }
+                        .foregroundColor(.red.opacity(0.8))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .alert("Delete All Items?", isPresented: $showingDeleteAllConfirm) {
+                        Button("Delete All", role: .destructive) {
+                            withAnimation { clipboardManager.permanentlyDeleteAll() }
+                            showingRecentlyDeleted = false
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("All items in Recently Deleted will be permanently removed. This cannot be undone.")
+                    }
+
+                    Button {
+                        showingRecoverAllConfirm = true
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.uturn.left")
+                                .font(.system(size: 10))
+                            Text("Recover All")
+                                .font(.system(size: 11))
+                        }
+                        .foregroundColor(.accentColor)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .alert("Recover All Items?", isPresented: $showingRecoverAllConfirm) {
+                        Button("Recover All") {
+                            withAnimation { clipboardManager.recoverAllItems() }
+                            showingRecentlyDeleted = false
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("All items will be restored to their original location.")
+                    }
+                }
+
+                Spacer()
+
+                // Right: days until oldest item is auto-cleaned
+                if let daysLeft = nextAutoCleanDays {
+                    Text(daysLeft == 0 ? "Auto-Clean today" : "Auto-Clean in \(daysLeft) days")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary.opacity(0.55))
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+        }
+    }
+
+    @ViewBuilder
+    private func deletedItemRow(_ item: ClipboardItem) -> some View {
+        HStack(spacing: 6) {
+
+            // Content preview
+            Group {
+                if item.isHidden {
+                    HStack(spacing: 5) {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.accentColor)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(item.description ?? (item.image != nil ? "Private Image" : "Private"))
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.primary)
+                                .lineLimit(1)
+                            Text("••••••••••")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                } else {
+                    switch item.content {
+                    case .text(let text):
+                        Text(text)
+                            .font(.system(size: 12))
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    case .image(let image):
+                        HStack(spacing: 6) {
+                            Image(nsImage: image)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 32, height: 26)
+                                .clipShape(RoundedRectangle(cornerRadius: 3))
+                            Text("\(Int(image.size.width)) × \(Int(image.size.height))")
+                                .font(.system(size: 11))
+                                .foregroundColor(.primary)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Days since deletion
+            if let deletedAt = item.deletedAt {
+                let days = max(0, Int(Date().timeIntervalSince(deletedAt) / 86400))
+                Text(days == 0 ? "today" : "\(days)d")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.secondary.opacity(0.6))
+                    .fixedSize()
+            }
+
+            // Recover
+            Button {
+                withAnimation { clipboardManager.recoverItem(item) }
+                if clipboardManager.deletedItems.isEmpty {
+                    showingRecentlyDeleted = false
+                }
+            } label: {
+                Image(systemName: "arrow.uturn.left")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary.opacity(0.8))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            // Delete Forever
+            Button {
+                clipboardManager.permanentlyDelete(item)
+                if clipboardManager.deletedItems.isEmpty {
+                    showingRecentlyDeleted = false
+                }
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 11))
+                    .foregroundColor(.red.opacity(0.65))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.clear))
     }
 
     // MARK: - Empty state
@@ -829,7 +1071,7 @@ struct PopupView: View {
             if selectedTab == .history {
                 clipboardManager.deleteHistoryItem(item)
             } else {
-                clipboardManager.unpinItem(item)
+                clipboardManager.softDeletePinnedItem(item)
             }
             selectedIndex = min(selectedIndex, max(0, currentItems.count - 1))
         }

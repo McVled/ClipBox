@@ -17,6 +17,7 @@ class ClipboardManager: ObservableObject {
     @Published var history:      [ClipboardItem] = []
     @Published var pinnedItems:  [ClipboardItem] = []
     @Published var tags:         [ClipBoxTag]    = []
+    @Published var deletedItems: [ClipboardItem] = []
 
     // MARK: - Private Properties
 
@@ -49,6 +50,7 @@ class ClipboardManager: ObservableObject {
 
     private let indexKey       = "com.clipbox.historyIndex"
     private let pinnedIndexKey = "com.clipbox.pinnedIndex"
+    private let deletedIndexKey = "com.clipbox.deletedIndex"
 
     /// Serial queue that handles all filesystem and UserDefaults persistence
     /// so it never blocks the main thread.  Saves are dispatched async after
@@ -70,6 +72,8 @@ class ClipboardManager: ObservableObject {
         loadTags()
         loadHistory()
         loadPinnedItems()
+        loadDeletedItems()
+        pruneExpiredDeletedItems()
     }
 
     /// Blocks until every pending background save has completed.  Called from
@@ -122,12 +126,18 @@ class ClipboardManager: ObservableObject {
         savePinnedItems()
     }
 
-    /// Deletes a tag and removes all pinned items that belonged to it.
+    /// Deletes a tag and soft-deletes all pinned items that belonged to it.
     func deleteTagAndItems(_ tag: ClipBoxTag) {
+        let toDelete = pinnedItems.filter { $0.tagID == tag.id }
+        let softDeleted = toDelete.map {
+            $0.withDeletion(tagName: tag.name, tagColor: tag.colorHex, fromPinned: true)
+        }
         tags.removeAll { $0.id == tag.id }
         pinnedItems.removeAll { $0.tagID == tag.id }
+        deletedItems.insert(contentsOf: softDeleted, at: 0)
         saveTags()
         savePinnedItems()
+        saveDeletedItems()
         pruneOrphanedImageFiles()
     }
 
@@ -209,6 +219,12 @@ class ClipboardManager: ObservableObject {
         }
         for item in pinnedItems where item.image != nil {
             names.insert("pinned_\(item.id).png")
+        }
+        for item in deletedItems where item.image != nil {
+            // Deleted history images keep the plain filename; deleted pinned images
+            // keep the "pinned_" prefix — whichever was used when the item was alive.
+            let filename = item.deletedFromPinned ? "pinned_\(item.id).png" : "\(item.id).png"
+            names.insert(filename)
         }
         return names
     }
@@ -405,21 +421,238 @@ class ClipboardManager: ObservableObject {
         timer = nil
     }
 
+    // MARK: - Recently Deleted
+
+    /// Soft-deletes a history item — moves it to Recently Deleted instead of erasing it.
     func deleteHistoryItem(_ item: ClipboardItem) {
         history.removeAll { $0.id == item.id }
+        deletedItems.insert(item.withDeletion(tagName: nil, tagColor: nil, fromPinned: false), at: 0)
         saveHistory()
+        saveDeletedItems()
+    }
+
+    /// Soft-deletes a pinned item — snapshots tag info for recovery, then removes it.
+    func softDeletePinnedItem(_ item: ClipboardItem) {
+        let tag = item.tagID.flatMap { id in tags.first(where: { $0.id == id }) }
+        pinnedItems.removeAll { $0.id == item.id }
+        deletedItems.insert(item.withDeletion(tagName: tag?.name, tagColor: tag?.colorHex, fromPinned: true), at: 0)
+        savePinnedItems()
+        saveDeletedItems()
+        pruneOrphanedImageFiles()
+    }
+
+    /// Moves a deleted item back to where it came from (history or pinnedItems).
+    /// Recreates its tag if the tag was deleted in the meantime.
+    func recoverItem(_ item: ClipboardItem) {
+        deletedItems.removeAll { $0.id == item.id }
+
+        let recovered = item.withRecovery()
+
+        if item.deletedFromPinned {
+            // Recreate the tag if it's missing.
+            if let tagID = item.tagID, !tags.contains(where: { $0.id == tagID }),
+               let name = item.deletedTagName, let color = item.deletedTagColor {
+                tags.append(ClipBoxTag(id: tagID, name: name, colorHex: color))
+                saveTags()
+            }
+            pinnedItems.insert(recovered, at: 0)
+            savePinnedItems()
+        } else {
+            history.insert(recovered, at: 0)
+            if history.count > maxItems { history = Array(history.prefix(maxItems)) }
+            saveHistory()
+        }
+
+        saveDeletedItems()
+    }
+
+    /// Recovers every item in Recently Deleted in one shot.
+    func recoverAllItems() {
+        let toRecover = deletedItems
+        deletedItems.removeAll()
+
+        var didCreateTag = false
+        for item in toRecover {
+            let recovered = item.withRecovery()
+            if item.deletedFromPinned {
+                if let tagID = item.tagID, !tags.contains(where: { $0.id == tagID }),
+                   let name = item.deletedTagName, let color = item.deletedTagColor {
+                    tags.append(ClipBoxTag(id: tagID, name: name, colorHex: color))
+                    didCreateTag = true
+                }
+                pinnedItems.insert(recovered, at: 0)
+            } else {
+                history.insert(recovered, at: 0)
+            }
+        }
+
+        if didCreateTag { saveTags() }
+        if history.count > maxItems { history = Array(history.prefix(maxItems)) }
+        saveHistory()
+        savePinnedItems()
+        saveDeletedItems()
+    }
+
+    /// Permanently removes an item from Recently Deleted — no recovery possible.
+    func permanentlyDelete(_ item: ClipboardItem) {
+        deletedItems.removeAll { $0.id == item.id }
+        saveDeletedItems()
+        pruneOrphanedImageFiles()
+    }
+
+    func permanentlyDeleteAll() {
+        deletedItems.removeAll()
+        saveDeletedItems()
+        pruneOrphanedImageFiles()
+    }
+
+    /// Removes items that have been in Recently Deleted for more than 7 days.
+    private func pruneExpiredDeletedItems() {
+        let sevenDays: TimeInterval = 7 * 24 * 3600
+        let now = Date()
+        let before = deletedItems.count
+        deletedItems.removeAll { item in
+            guard let at = item.deletedAt else { return true }
+            return now.timeIntervalSince(at) > sevenDays
+        }
+        if deletedItems.count != before {
+            saveDeletedItems()
+            pruneOrphanedImageFiles()
+        }
+    }
+
+    // MARK: - Persist Recently Deleted
+
+    private func saveDeletedItems() {
+        let snapshot = deletedItems
+        let dir      = imagesDirectory
+        let key      = deletedIndexKey
+        let fmt      = Self.dateFormatter
+        saveQueue.async {
+            var entries: [[String: String]] = []
+            for item in snapshot {
+                var e: [String: String] = [
+                    "id":   item.id.uuidString,
+                    "date": fmt.string(from: item.date)
+                ]
+                if let at = item.deletedAt { e["deletedAt"] = fmt.string(from: at) }
+                if let n  = item.deletedTagName  { e["deletedTagName"]  = n }
+                if let c  = item.deletedTagColor { e["deletedTagColor"] = c }
+                if let t  = item.tagID           { e["tagID"]           = t.uuidString }
+                if item.deletedFromPinned        { e["fromPinned"]      = "1" }
+                if let d  = item.description, !d.isEmpty { e["description"] = d }
+                if item.isHidden                 { e["hidden"]          = "1" }
+
+                switch item.content {
+                case .text(let text):
+                    e["type"]  = "text"
+                    e["value"] = text
+                case .image(let image):
+                    let fromPinned = item.deletedFromPinned
+                    let filename   = fromPinned ? "pinned_\(item.id).png" : "\(item.id).png"
+                    let fileURL    = dir.appendingPathComponent(filename)
+                    if !FileManager.default.fileExists(atPath: fileURL.path),
+                       let pngData = image.pngData() {
+                        try? pngData.write(to: fileURL)
+                    }
+                    e["type"]     = "image"
+                    e["filename"] = filename
+                }
+                entries.append(e)
+            }
+            if let data = try? JSONEncoder().encode(entries) {
+                UserDefaults.standard.set(data, forKey: key)
+            }
+        }
+    }
+
+    private func loadDeletedItems() {
+        guard let data    = UserDefaults.standard.data(forKey: deletedIndexKey),
+              let entries = try? JSONDecoder().decode([[String: String]].self, from: data)
+        else { return }
+
+        let fmt = ISO8601DateFormatter()
+        var loaded: [ClipboardItem] = []
+
+        for e in entries {
+            guard let type    = e["type"],
+                  let dateStr = e["date"],
+                  let date    = fmt.date(from: dateStr),
+                  let idStr   = e["id"],
+                  let id      = UUID(uuidString: idStr)
+            else { continue }
+
+            let deletedAt       = e["deletedAt"].flatMap { fmt.date(from: $0) }
+            let deletedTagName  = e["deletedTagName"]
+            let deletedTagColor = e["deletedTagColor"]
+            let tagID           = e["tagID"].flatMap { UUID(uuidString: $0) }
+            let fromPinned      = e["fromPinned"] == "1"
+            let description     = e["description"]
+            let isHidden        = e["hidden"] == "1"
+
+            switch type {
+            case "text":
+                if let text = e["value"] {
+                    loaded.append(ClipboardItem(
+                        loadedWithID:      id,
+                        content:           .text(text),
+                        date:              date,
+                        description:       description,
+                        isHidden:          isHidden,
+                        tagID:             tagID,
+                        deletedAt:         deletedAt,
+                        deletedTagName:    deletedTagName,
+                        deletedTagColor:   deletedTagColor,
+                        deletedFromPinned: fromPinned
+                    ))
+                }
+            case "image":
+                if let filename = e["filename"] {
+                    let fileURL = imagesDirectory.appendingPathComponent(filename)
+                    if let image = NSImage(contentsOf: fileURL) {
+                        loaded.append(ClipboardItem(
+                            loadedWithID:      id,
+                            content:           .image(image),
+                            date:              date,
+                            description:       description,
+                            isHidden:          isHidden,
+                            tagID:             tagID,
+                            deletedAt:         deletedAt,
+                            deletedTagName:    deletedTagName,
+                            deletedTagColor:   deletedTagColor,
+                            deletedFromPinned: fromPinned
+                        ))
+                    }
+                }
+            default:
+                break
+            }
+        }
+
+        deletedItems = loaded
     }
 
     func clearHistory() {
+        let softDeleted = history.map {
+            $0.withDeletion(tagName: nil, tagColor: nil, fromPinned: false)
+        }
         history.removeAll()
+        deletedItems.insert(contentsOf: softDeleted, at: 0)
         saveHistory()
+        saveDeletedItems()
     }
 
     func clearAllPinned() {
-        tags.removeAll()
+        let softDeleted = pinnedItems.map { item -> ClipboardItem in
+            let tag = item.tagID.flatMap { id in tags.first(where: { $0.id == id }) }
+            return item.withDeletion(tagName: tag?.name, tagColor: tag?.colorHex, fromPinned: true)
+        }
         pinnedItems.removeAll()
+        tags.removeAll()
+        deletedItems.insert(contentsOf: softDeleted, at: 0)
         saveTags()
         savePinnedItems()
+        saveDeletedItems()
         pruneOrphanedImageFiles()
     }
 
