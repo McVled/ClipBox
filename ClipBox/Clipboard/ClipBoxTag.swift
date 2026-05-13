@@ -19,16 +19,16 @@ struct ClipBoxTag: Identifiable, Codable {
     var color: Color { Color(hex: colorHex) ?? .accentColor }
 
     static let palette: [String] = [
-        "#FF6B6B",
-        "#FF9F43",
-        "#FECA57",
-        "#1DD1A1",
-        "#48DBFB",
-        "#54A0FF",
-        "#5F27CD",
-        "#FF9FF3",
-        "#2ECC71",
-        "#E84393",
+        "#FF6B6B",  // red
+        "#FF9F43",  // orange
+        "#FECA57",  // yellow
+        "#A0522D",  // brown
+        "#2ECC71",  // green
+        "#1DD1A1",  // teal
+        "#48DBFB",  // cyan
+        "#54A0FF",  // blue
+        "#FF9FF3",  // light pink
+        "#E84393",  // hot pink
     ]
 }
 
