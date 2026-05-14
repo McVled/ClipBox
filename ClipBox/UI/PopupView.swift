@@ -669,13 +669,19 @@ struct PopupView: View {
                     Button {
                         showingDeleteAllConfirm = true
                     } label: {
-                        HStack(spacing: 3) {
+                        HStack(spacing: 4) {
                             Image(systemName: "trash")
                                 .font(.system(size: 10))
                             Text("Delete All")
                                 .font(.system(size: 11))
                         }
-                        .foregroundColor(.red.opacity(0.8))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color.red.opacity(0.75))
+                        )
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -692,13 +698,19 @@ struct PopupView: View {
                     Button {
                         showingRecoverAllConfirm = true
                     } label: {
-                        HStack(spacing: 3) {
+                        HStack(spacing: 4) {
                             Image(systemName: "arrow.uturn.left")
                                 .font(.system(size: 10))
                             Text("Recover All")
                                 .font(.system(size: 11))
                         }
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color.accentColor.opacity(0.75))
+                        )
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
