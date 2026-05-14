@@ -4,7 +4,6 @@
 //
 
 import Cocoa
-import Carbon
 
 /// Listens globally for the ⌘⇧V keyboard shortcut and fires a callback
 /// whenever it is pressed, regardless of which app is currently in focus.
@@ -46,18 +45,31 @@ class HotkeyManager {
     /// UserDefaults key for the persisted shortcut.
     private static let shortcutKey = "com.clipbox.shortcut"
 
-    /// The shortcut currently listened for. Reads & writes go through UserDefaults
-    /// so the value survives restarts and updates take effect live (the tap
-    /// callback reads this property on every keypress).
+    /// In-memory cache of the current shortcut.  The CGEventTap callback reads
+    /// `currentShortcut` on EVERY keypress system-wide, so doing a
+    /// `JSONDecoder().decode` from UserDefaults each time would burn cycles
+    /// in the global keyboard hot path.  We load once on first access and
+    /// keep it in sync via the setter.  Both getter and setter run on the
+    /// main thread (UI updates + main run-loop event tap), so no locking.
+    private var _shortcutCache: Shortcut?
+
+    /// The shortcut currently listened for. Backed by `_shortcutCache` for fast
+    /// reads from the event-tap callback; UserDefaults is the persistence layer.
     var currentShortcut: Shortcut {
         get {
+            if let cached = _shortcutCache { return cached }
+            let loaded: Shortcut
             if let data = UserDefaults.standard.data(forKey: Self.shortcutKey),
                let s = try? JSONDecoder().decode(Shortcut.self, from: data) {
-                return s
+                loaded = s
+            } else {
+                loaded = .default
             }
-            return .default
+            _shortcutCache = loaded
+            return loaded
         }
         set {
+            _shortcutCache = newValue
             if let data = try? JSONEncoder().encode(newValue) {
                 UserDefaults.standard.set(data, forKey: Self.shortcutKey)
             }
@@ -147,25 +159,25 @@ class HotkeyManager {
                 return Unmanaged.passRetained(event)
             }
 
-            let flags   = event.flags
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
             let sc      = manager.currentShortcut
 
-            // Every modifier state must match exactly — otherwise ⌘V would also
-            // fire a shortcut configured as ⌘⇧V (wrong) because `contains` alone
-            // would still match.
-            let cmdMatch   = flags.contains(.maskCommand)   == sc.command
-            let shiftMatch = flags.contains(.maskShift)     == sc.shift
-            let optMatch   = flags.contains(.maskAlternate) == sc.option
-            let ctrlMatch  = flags.contains(.maskControl)   == sc.control
-            let keyMatch   = keyCode == Int64(sc.keyCode)
-
-            if cmdMatch && shiftMatch && optMatch && ctrlMatch && keyMatch {
-                DispatchQueue.main.async {
-                    manager.onTrigger?()
+            // Fast path: most keystrokes aren't our hotkey. Check keyCode first
+            // so we bail out before touching flags. Modifiers must match exactly
+            // — otherwise ⌘V would also fire a shortcut configured as ⌘⇧V
+            // (wrong) because `contains` alone would still match.
+            if keyCode == Int64(sc.keyCode) {
+                let flags = event.flags
+                if flags.contains(.maskCommand)   == sc.command,
+                   flags.contains(.maskShift)     == sc.shift,
+                   flags.contains(.maskAlternate) == sc.option,
+                   flags.contains(.maskControl)   == sc.control {
+                    DispatchQueue.main.async {
+                        manager.onTrigger?()
+                    }
+                    // Returning nil *consumes* the event — it won't reach any other app.
+                    return nil
                 }
-                // Returning nil *consumes* the event — it won't reach any other app.
-                return nil
             }
 
             // For any other key, pass the event through unchanged.

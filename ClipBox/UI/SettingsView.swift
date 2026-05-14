@@ -13,8 +13,14 @@ struct SettingsView: View {
     @Binding var historyLimit:   Int
     @Binding var showInMenuBar:  Bool
 
-    let onBack:  () -> Void
-    let onReset: () -> Void
+    let onBack:           () -> Void
+    let onReset:          () -> Void
+    let onExport:         () -> Void
+    let onImport:         () -> Void
+    let exportInProgress: Bool
+    let importInProgress: Bool
+
+    @State private var resetHovered: Bool = false
 
     private let limitOptions = [10, 15, 20, 25, 50]
 
@@ -39,11 +45,51 @@ struct SettingsView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+
                     Spacer()
+
+                    HStack(spacing: 12) {
+                        Button(action: onExport) {
+                            // ProgressView swaps in for the icon while a backup
+                            // is being encoded/written so the user sees the
+                            // operation is in flight.
+                            if exportInProgress {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .scaleEffect(0.7)
+                                    .frame(width: 16, height: 16)
+                            } else {
+                                Image(systemName: "square.and.arrow.up")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 16, height: 16)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(exportInProgress || importInProgress)
+                        .help(exportInProgress ? "Exporting…" : "Export backup")
+
+                        Button(action: onImport) {
+                            if importInProgress {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .scaleEffect(0.7)
+                                    .frame(width: 16, height: 16)
+                            } else {
+                                Image(systemName: "square.and.arrow.down")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 16, height: 16)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(exportInProgress || importInProgress)
+                        .help(importInProgress ? "Importing…" : "Import backup")
+                    }
                 }
             }
             .padding(.horizontal, 12)
-            .padding(.top, 10)
+            .padding(.top, 16)
             .padding(.bottom, 8)
 
             Divider()
@@ -108,14 +154,27 @@ struct SettingsView: View {
                 Spacer().frame(height: 14)
                 Divider()
 
+                // Pill-styled to match Delete All / Recover All. Orange tint
+                // signals "warning, this will undo your settings" without the
+                // hard-destructive feel of red.
                 Button(action: onReset) {
                     Text("Reset to Defaults")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color.orange.opacity(resetHovered ? 0.9 : 0.75))
+                        )
                 }
                 .buttonStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .padding(.bottom, 20)
+                .onHover { hovering in
+                    withAnimation(.easeInOut(duration: 0.12)) { resetHovered = hovering }
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }

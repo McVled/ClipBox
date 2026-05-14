@@ -23,6 +23,15 @@ class ClipboardManager: ObservableObject {
 
     static let historyLimitKey     = "com.clipbox.historyLimit"
     static let historyLimitDefault = 15
+    /// Hard limit on pinned items. New pin attempts past this point are rejected
+    /// and surfaced to the UI via `.clipBoxPinLimitReached` so the user can
+    /// unpin something explicitly — silently dropping a pin they just chose
+    /// would feel like a bug.
+    static let pinnedLimit         = 100
+    /// Hard limit on Recently Deleted entries. When exceeded the oldest are
+    /// permanently dropped FIFO. This is on top of the 7-day auto-clean, so
+    /// rapid mass-deletes can't balloon storage in a single afternoon.
+    static let deletedItemsLimit   = 200
     private static let tagsKey     = "com.clipbox.tags"
     private static let dateFormatter = ISO8601DateFormatter()
 
@@ -135,6 +144,7 @@ class ClipboardManager: ObservableObject {
         tags.removeAll { $0.id == tag.id }
         pinnedItems.removeAll { $0.tagID == tag.id }
         deletedItems.insert(contentsOf: softDeleted, at: 0)
+        enforceDeletedItemsLimit()
         saveTags()
         savePinnedItems()
         saveDeletedItems()
@@ -299,6 +309,12 @@ class ClipboardManager: ObservableObject {
 
     func pinItem(_ item: ClipboardItem, description: String? = nil, isHidden: Bool = false, tagID: UUID? = nil) {
         guard !pinnedItems.contains(where: { $0.deduplicationKey == item.deduplicationKey }) else { return }
+        // Refuse new pins past the hard limit. Posting a notification lets the
+        // popup show an alert without ClipboardManager knowing about SwiftUI.
+        guard pinnedItems.count < Self.pinnedLimit else {
+            NotificationCenter.default.post(name: .clipBoxPinLimitReached, object: nil)
+            return
+        }
         let pinned = ClipboardItem(
             content:     item.content,
             date:        item.date,
@@ -431,10 +447,18 @@ class ClipboardManager: ObservableObject {
 
     // MARK: - Recently Deleted
 
+    /// Trims `deletedItems` down to `deletedItemsLimit` by permanently
+    /// dropping the oldest entries.  Call after any insertion path.
+    private func enforceDeletedItemsLimit() {
+        guard deletedItems.count > Self.deletedItemsLimit else { return }
+        deletedItems = Array(deletedItems.prefix(Self.deletedItemsLimit))
+    }
+
     /// Soft-deletes a history item — moves it to Recently Deleted instead of erasing it.
     func deleteHistoryItem(_ item: ClipboardItem) {
         history.removeAll { $0.id == item.id }
         deletedItems.insert(item.withDeletion(tagName: nil, tagColor: nil, fromPinned: false), at: 0)
+        enforceDeletedItemsLimit()
         saveHistory()
         saveDeletedItems()
     }
@@ -444,6 +468,7 @@ class ClipboardManager: ObservableObject {
         let tag = item.tagID.flatMap { id in tags.first(where: { $0.id == id }) }
         pinnedItems.removeAll { $0.id == item.id }
         deletedItems.insert(item.withDeletion(tagName: tag?.name, tagColor: tag?.colorHex, fromPinned: true), at: 0)
+        enforceDeletedItemsLimit()
         savePinnedItems()
         saveDeletedItems()
         pruneOrphanedImageFiles()
@@ -514,6 +539,7 @@ class ClipboardManager: ObservableObject {
                 $0.withDeletion(tagName: nil, tagColor: nil, fromPinned: false)
             }
             deletedItems.insert(contentsOf: overflowBack, at: 0)
+            enforceDeletedItemsLimit()
         }
 
         if didCreateTag { saveTags() }
@@ -667,6 +693,7 @@ class ClipboardManager: ObservableObject {
         }
         history.removeAll()
         deletedItems.insert(contentsOf: softDeleted, at: 0)
+        enforceDeletedItemsLimit()
         saveHistory()
         saveDeletedItems()
     }
@@ -679,6 +706,7 @@ class ClipboardManager: ObservableObject {
         pinnedItems.removeAll()
         tags.removeAll()
         deletedItems.insert(contentsOf: softDeleted, at: 0)
+        enforceDeletedItemsLimit()
         saveTags()
         savePinnedItems()
         saveDeletedItems()
@@ -749,6 +777,261 @@ class ClipboardManager: ObservableObject {
         keyUp?.flags   = .maskCommand
         keyDown?.post(tap: .cghidEventTap)
         keyUp?.post(tap: .cghidEventTap)
+    }
+}
+
+// MARK: - Backup & Restore
+
+extension ClipboardManager {
+
+    /// 4-byte magic header so we can validate the file and version the format.
+    private static let backupMagic = Data([0x43, 0x42, 0x42, 0x01])  // "CBB\x01"
+
+    /// Highest backup file format the current build understands. Backups with a
+    /// higher version are rejected on import to prevent partial / corrupt restores.
+    static let currentBackupVersion = 1
+
+    /// Thread-safe backup encoder.  Operates ONLY on its parameters and never
+    /// touches `self.*` @Published state, so it's safe to call off the main
+    /// thread.  Callers must snapshot the arrays on main before invoking this.
+    static func encodeBackup(
+        tags:          [ClipBoxTag],
+        pinnedItems:   [ClipboardItem],
+        history:       [ClipboardItem],
+        deletedItems:  [ClipboardItem],
+        historyLimit:  Int,
+        followCursor:  Bool,
+        showInMenuBar: Bool,
+        shortcut:      Shortcut
+    ) throws -> Data {
+        let settings = BackupSettings(
+            historyLimit:  historyLimit,
+            followCursor:  followCursor,
+            showInMenuBar: showInMenuBar,
+            shortcut:      shortcut
+        )
+        let backup = ClipBoxBackup(
+            version:         Self.currentBackupVersion,
+            exportedAt:      Date(),
+            settings:        settings,
+            tags:            tags.map         { BackupTag($0) },
+            pinnedItems:     pinnedItems.map  { BackupItem($0) },
+            history:         history.map      { BackupItem($0) },
+            recentlyDeleted: deletedItems.map { BackupItem($0) }
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting     = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let json = try encoder.encode(backup)
+
+        // LZFSE compression — typically 5–10× smaller than raw JSON+base64.
+        let compressed = try (json as NSData).compressed(using: .lzfse) as Data
+        return Self.backupMagic + compressed
+    }
+
+    /// Convenience that snapshots @Published state from the current (main)
+    /// thread and forwards to `encodeBackup`. Use this only from main; for
+    /// background work, snapshot manually and call `encodeBackup` directly.
+    func exportBackup(historyLimit: Int,
+                      followCursor: Bool,
+                      showInMenuBar: Bool,
+                      shortcut: Shortcut) throws -> Data {
+        try Self.encodeBackup(
+            tags:          tags,
+            pinnedItems:   pinnedItems,
+            history:       history,
+            deletedItems:  deletedItems,
+            historyLimit:  historyLimit,
+            followCursor:  followCursor,
+            showInMenuBar: showInMenuBar,
+            shortcut:      shortcut
+        )
+    }
+
+    /// Result of `decodeBackup` — a thread-safe value holding everything needed
+    /// to restore state. Pass to `applyDecoded(_:)` on the main thread.
+    struct DecodedBackup {
+        let historyLimit:  Int
+        let followCursor:  Bool
+        let showInMenuBar: Bool
+        let shortcut:      Shortcut
+        let tags:          [ClipBoxTag]
+        let pinnedItems:   [ClipboardItem]
+        let history:       [ClipboardItem]
+        let deletedItems:  [ClipboardItem]
+    }
+
+    /// Thread-safe decoder.  Validates header, decompresses, parses JSON,
+    /// checks version, and rebuilds NSImages from base64.  Does NOT touch
+    /// any @Published state — safe to call off the main thread.
+    static func decodeBackup(_ rawData: Data) throws -> DecodedBackup {
+        guard rawData.count > backupMagic.count,
+              rawData.prefix(backupMagic.count) == backupMagic else {
+            throw NSError(domain: "ClipBox", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "This file is not a ClipBox backup."])
+        }
+        let payload = rawData.subdata(in: backupMagic.count..<rawData.count)
+        let json: Data
+        do {
+            json = try (payload as NSData).decompressed(using: .lzfse) as Data
+        } catch {
+            throw NSError(domain: "ClipBox", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "The backup file is corrupted and cannot be decompressed."])
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let backup: ClipBoxBackup
+        do {
+            backup = try decoder.decode(ClipBoxBackup.self, from: json)
+        } catch {
+            throw NSError(domain: "ClipBox", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: "The backup file's format is invalid or unreadable."])
+        }
+
+        guard backup.version <= currentBackupVersion else {
+            throw NSError(domain: "ClipBox", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "This backup was created by a newer version of ClipBox. Please update the app and try again."])
+        }
+
+        return DecodedBackup(
+            historyLimit:  backup.settings.historyLimit,
+            followCursor:  backup.settings.followCursor,
+            showInMenuBar: backup.settings.showInMenuBar,
+            shortcut:      backup.settings.shortcut,
+            tags:          backup.tags.map { ClipBoxTag(id: $0.id, name: $0.name, colorHex: $0.colorHex) },
+            pinnedItems:   backup.pinnedItems.compactMap     { $0.toClipboardItem() },
+            history:       backup.history.compactMap         { $0.toClipboardItem() },
+            deletedItems:  backup.recentlyDeleted.compactMap { $0.toClipboardItem() }
+        )
+    }
+
+    /// Main-thread restore — applies a previously decoded backup to live state.
+    /// Truncates history to the current `maxItems` (which we set first from the
+    /// decoded settings) so the imported history fits the user's chosen limit.
+    func applyDecoded(_ d: DecodedBackup) {
+        UserDefaults.standard.set(d.historyLimit, forKey: Self.historyLimitKey)
+        PopupWindow.shared.followCursor       = d.followCursor
+        StatusBarController.shared.setVisible(d.showInMenuBar)
+        HotkeyManager.shared.currentShortcut  = d.shortcut
+
+        tags         = d.tags
+        pinnedItems  = d.pinnedItems
+        history      = Array(d.history.prefix(maxItems))
+        deletedItems = d.deletedItems
+
+        // Drop items already past the 7-day window inside the backup so they
+        // don't briefly resurface in Recently Deleted, and drop tags with no
+        // items — matches the same cleanup loadPinnedItems performs at launch.
+        pruneExpiredDeletedItems()
+        pruneEmptyTags()
+
+        saveTags()
+        savePinnedItems()
+        saveHistory()
+        saveDeletedItems()
+        pruneOrphanedImageFiles()
+    }
+
+    /// Convenience for synchronous import on the main thread. For large
+    /// backups, prefer `decodeBackup` (background) + `applyDecoded` (main)
+    /// to keep the UI responsive.
+    func importBackup(_ rawData: Data) throws {
+        let decoded = try Self.decodeBackup(rawData)
+        applyDecoded(decoded)
+    }
+}
+
+// MARK: - Backup Codable types (file-private)
+
+private struct ClipBoxBackup: Codable {
+    let version:         Int
+    let exportedAt:      Date
+    let settings:        BackupSettings
+    let tags:            [BackupTag]
+    let pinnedItems:     [BackupItem]
+    let history:         [BackupItem]
+    let recentlyDeleted: [BackupItem]
+}
+
+private struct BackupSettings: Codable {
+    let historyLimit:  Int
+    let followCursor:  Bool
+    let showInMenuBar: Bool
+    let shortcut:      Shortcut
+}
+
+private struct BackupTag: Codable {
+    let id:       UUID
+    let name:     String
+    let colorHex: String
+
+    init(_ tag: ClipBoxTag) {
+        id       = tag.id
+        name     = tag.name
+        colorHex = tag.colorHex
+    }
+}
+
+private struct BackupItem: Codable {
+    let id:                UUID
+    let type:              String
+    let text:              String?
+    let imageBase64:       String?
+    let date:              Date
+    let description:       String?
+    let isHidden:          Bool
+    let tagID:             UUID?
+    let deletedAt:         Date?
+    let deletedTagName:    String?
+    let deletedTagColor:   String?
+    let deletedFromPinned: Bool
+
+    init(_ item: ClipboardItem) {
+        id                = item.id
+        date              = item.date
+        description       = item.description
+        isHidden          = item.isHidden
+        tagID             = item.tagID
+        deletedAt         = item.deletedAt
+        deletedTagName    = item.deletedTagName
+        deletedTagColor   = item.deletedTagColor
+        deletedFromPinned = item.deletedFromPinned
+        switch item.content {
+        case .text(let t):
+            type = "text"; text = t; imageBase64 = nil
+        case .image(let img):
+            type = "image"; text = nil
+            imageBase64 = img.pngData()?.base64EncodedString()
+        }
+    }
+
+    func toClipboardItem() -> ClipboardItem? {
+        let content: ClipboardContent
+        switch type {
+        case "text":
+            guard let t = text else { return nil }
+            content = .text(t)
+        case "image":
+            guard let b64  = imageBase64,
+                  let data = Data(base64Encoded: b64),
+                  let img  = NSImage(data: data) else { return nil }
+            content = .image(img)
+        default:
+            return nil
+        }
+        return ClipboardItem(
+            loadedWithID:      id,
+            content:           content,
+            date:              date,
+            description:       description,
+            isHidden:          isHidden,
+            tagID:             tagID,
+            deletedAt:         deletedAt,
+            deletedTagName:    deletedTagName,
+            deletedTagColor:   deletedTagColor,
+            deletedFromPinned: deletedFromPinned
+        )
     }
 }
 

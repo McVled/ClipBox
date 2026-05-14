@@ -41,9 +41,20 @@ struct PopupView: View {
     @State private var selectedTagIndex: Int? = nil
 
     @State private var searchText: String = ""
-    @State private var showingRecentlyDeleted: Bool = false
+    @State private var showingRecentlyDeleted:  Bool = false
     @State private var showingDeleteAllConfirm: Bool = false
     @State private var showingRecoverAllConfirm: Bool = false
+    @State private var pendingImportData:        Data? = nil
+    @State private var showingImportConfirm:     Bool = false
+    @State private var showingImportError:       Bool = false
+    @State private var importErrorMessage:       String = ""
+    @State private var showingExportError:       Bool = false
+    @State private var exportErrorMessage:       String = ""
+    @State private var isExporting:              Bool = false
+    @State private var isImporting:              Bool = false
+    @State private var deleteAllHovered:         Bool = false
+    @State private var recoverAllHovered:        Bool = false
+    @State private var showingPinLimitAlert:     Bool = false
 
     // MARK: - Callbacks
 
@@ -84,16 +95,42 @@ struct PopupView: View {
                         ClipboardManager.shared.applyHistoryLimit()
                         showInMenuBar = StatusBarController.showInMenuBarDefault
                         StatusBarController.shared.setVisible(StatusBarController.showInMenuBarDefault)
-                    }
+                    },
+                    onExport:         { handleExport() },
+                    onImport:         { handleImport() },
+                    exportInProgress: isExporting,
+                    importInProgress: isImporting
                 )
+                .alert("Import Backup?", isPresented: $showingImportConfirm) {
+                    Button("Import", role: .destructive) {
+                        if let data = pendingImportData { applyImport(data) }
+                        pendingImportData = nil
+                    }
+                    Button("Cancel", role: .cancel) { pendingImportData = nil }
+                } message: {
+                    Text("This will replace all clipboard history, pinned items, tags, and settings with the contents of the backup file.")
+                }
+                .alert("Import Failed", isPresented: $showingImportError) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(importErrorMessage)
+                }
+                .alert("Export Failed", isPresented: $showingExportError) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(exportErrorMessage)
+                }
                 .transition(.move(edge: .trailing).combined(with: .opacity))
             } else {
+                // Plain opacity (no slide): mainView feels like a stable
+                // backdrop that Settings / Recently Deleted overlay slides
+                // off of, instead of two views passing each other sideways.
                 mainView
-                    .transition(.move(edge: .leading).combined(with: .opacity))
+                    .transition(.opacity)
             }
         }
         .frame(width: 340)
-        .frame(minHeight: 60, maxHeight: 400)
+        .frame(minHeight: 60, maxHeight: 420)
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
@@ -124,6 +161,14 @@ struct PopupView: View {
             handleKey(keyCode: keyCode,
                       flags:   NSEvent.ModifierFlags(rawValue: flagsRaw),
                       chars:   chars)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .clipBoxPinLimitReached)) { _ in
+            showingPinLimitAlert = true
+        }
+        .alert("Pinned Limit Reached", isPresented: $showingPinLimitAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("You can pin up to \(ClipboardManager.pinnedLimit) items. Unpin one before pinning another.")
         }
     }
 
@@ -680,11 +725,14 @@ struct PopupView: View {
                         .padding(.vertical, 4)
                         .background(
                             RoundedRectangle(cornerRadius: 6)
-                                .fill(Color.red.opacity(0.75))
+                                .fill(Color.red.opacity(deleteAllHovered ? 0.9 : 0.75))
                         )
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .onHover { hovering in
+                        withAnimation(.easeInOut(duration: 0.12)) { deleteAllHovered = hovering }
+                    }
                     .alert("Delete All Items?", isPresented: $showingDeleteAllConfirm) {
                         Button("Delete All", role: .destructive) {
                             withAnimation { clipboardManager.permanentlyDeleteAll() }
@@ -709,11 +757,14 @@ struct PopupView: View {
                         .padding(.vertical, 4)
                         .background(
                             RoundedRectangle(cornerRadius: 6)
-                                .fill(Color.accentColor.opacity(0.75))
+                                .fill(Color.accentColor.opacity(recoverAllHovered ? 0.9 : 0.75))
                         )
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .onHover { hovering in
+                        withAnimation(.easeInOut(duration: 0.12)) { recoverAllHovered = hovering }
+                    }
                     .alert("Recover All Items?", isPresented: $showingRecoverAllConfirm) {
                         Button("Recover All") {
                             withAnimation { clipboardManager.recoverAllItems() }
@@ -984,6 +1035,156 @@ extension PopupView {
             return clipboardManager.pinnedItems.filter { $0.tagID == tagID }.isEmpty
         }
         return clipboardManager.pinnedItems.isEmpty && clipboardManager.tags.isEmpty
+    }
+
+    // MARK: - Export / Import
+
+    private func handleExport() {
+        // Capture state values now (instant); serialization is deferred until
+        // the user has actually chosen a save location.
+        let limit        = historyLimit
+        let follow       = followCursor
+        let menuBar      = showInMenuBar
+        let shortcutCopy = shortcut
+
+        let dateStr: String = {
+            let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+            return f.string(from: Date())
+        }()
+
+        PopupWindow.shared.beginFileDialog()
+        NSApp.activate(ignoringOtherApps: true)
+
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "ClipBox Backup \(dateStr).clipboxbackup"
+        panel.canCreateDirectories = true
+        panel.title                = "Export ClipBox Backup"
+        panel.message              = "Compressed backup of all settings, tags, pinned items, history, and Recently Deleted."
+        panel.isExtensionHidden    = false
+        // Push above the popup's .floating level so the panel isn't hidden behind it.
+        panel.level                = .modalPanel
+
+        panel.begin { response in
+            defer { PopupWindow.shared.endFileDialog() }
+            guard response == .OK, let url = panel.url else { return }
+
+            // Snapshot @Published arrays on MAIN before dispatching to background.
+            // Swift arrays are COW value types so this is a cheap reference bump.
+            // Without this, reading `tags`/`history`/etc. from a background queue
+            // could race with main-thread mutations (e.g. user copying during
+            // export) — Array.map on a concurrently-mutated array is UB.
+            let m            = ClipboardManager.shared
+            let tagsSnap     = m.tags
+            let pinnedSnap   = m.pinnedItems
+            let historySnap  = m.history
+            let deletedSnap  = m.deletedItems
+
+            // Flip progress flag now so the Settings header spinner appears
+            // and the buttons disable while encoding runs.
+            isExporting = true
+
+            // Heavy work (PNG encode + base64 + JSON + LZFSE) happens AFTER the
+            // user picks a location, so the dialog opens instantly. Done on a
+            // background queue so the main thread stays responsive.
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let data = try ClipboardManager.encodeBackup(
+                        tags:          tagsSnap,
+                        pinnedItems:   pinnedSnap,
+                        history:       historySnap,
+                        deletedItems:  deletedSnap,
+                        historyLimit:  limit,
+                        followCursor:  follow,
+                        showInMenuBar: menuBar,
+                        shortcut:      shortcutCopy
+                    )
+                    try data.write(to: url)
+                    DispatchQueue.main.async { isExporting = false }
+                } catch {
+                    DispatchQueue.main.async {
+                        isExporting        = false
+                        exportErrorMessage = error.localizedDescription
+                        showingExportError = true
+                    }
+                }
+            }
+        }
+    }
+
+    private func handleImport() {
+        PopupWindow.shared.beginFileDialog()
+        NSApp.activate(ignoringOtherApps: true)
+
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories    = false
+        panel.canChooseFiles          = true
+        panel.title                   = "Import ClipBox Backup"
+        panel.message                 = "Choose a .clipboxbackup file."
+        panel.level                   = .modalPanel
+
+        panel.begin { response in
+            defer { PopupWindow.shared.endFileDialog() }
+            guard response == .OK, let url = panel.url else { return }
+            // Read the file on a background queue — for backups with many
+            // images this can be tens of MB and would hitch the popup if read
+            // on main.
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let data = try Data(contentsOf: url)
+                    DispatchQueue.main.async {
+                        pendingImportData    = data
+                        showingImportConfirm = true
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        importErrorMessage = "Could not read the selected file."
+                        showingImportError = true
+                    }
+                }
+            }
+        }
+    }
+
+    private func applyImport(_ data: Data) {
+        // Flip progress flag immediately so the Settings header spinner
+        // appears while the background decode runs.
+        isImporting = true
+
+        // Decode (decompress + JSON parse + base64-decode every image) on
+        // background. Only the @Published state mutation happens on main,
+        // which is cheap.
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let decoded = try ClipboardManager.decodeBackup(data)
+                DispatchQueue.main.async {
+                    // Animate Settings out FIRST so SwiftUI doesn't render
+                    // intermediate frames of the Settings view with the
+                    // newly-restored data flickering in.
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        showingSettings = false
+                        selectedTab    = .history
+                    }
+                    clipboardManager.applyDecoded(decoded)
+                    // Sync SettingsView bindings with the newly restored values.
+                    shortcut      = HotkeyManager.shared.currentShortcut
+                    followCursor  = PopupWindow.shared.followCursor
+                    showInMenuBar = StatusBarController.isEnabled
+                    historyLimit  = clipboardManager.maxItems
+                    selectedIndex    = 0
+                    searchText       = ""
+                    activeTagID      = nil
+                    selectedTagIndex = nil
+                    isImporting      = false
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    isImporting        = false
+                    importErrorMessage = error.localizedDescription
+                    showingImportError = true
+                }
+            }
+        }
     }
 
     // MARK: - Clear Animation
@@ -1410,5 +1611,7 @@ private struct TagEditPopover: View {
 // MARK: - Notification Name
 
 extension Notification.Name {
-    static let clipBoxKeyDown = Notification.Name("clipBoxKeyDown")
+    static let clipBoxKeyDown           = Notification.Name("clipBoxKeyDown")
+    static let clipBoxPinLimitReached   = Notification.Name("clipBoxPinLimitReached")
 }
+

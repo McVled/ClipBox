@@ -93,6 +93,12 @@ class PopupWindow {
     /// `lastPosition` so the hotkey / drag-based memory is preserved.
     private var openedFromStatusBar = false
 
+    /// When `true`, the global mouse monitor does NOT close the popup on outside
+    /// clicks. Set by `beginFileDialog()` / `endFileDialog()` so that interactions
+    /// with NSSavePanel / NSOpenPanel (which fire the global click monitor as a
+    /// side effect) don't dismiss the popup while a file dialog is open.
+    private var suppressAutoClose = false
+
     /// UserDefaults key for the follow cursor preference.
     private static let followCursorKey = "com.clipbox.followCursor"
 
@@ -161,7 +167,7 @@ class PopupWindow {
 
         // ④ Create the panel.
         let newPanel = KeyablePanel(
-            contentRect: NSRect(x: 0, y: 0, width: 340, height: 400),
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 420),
             styleMask: [
                 .borderless,          // No title bar, no resize handles.
                 .nonactivatingPanel   // Does NOT make ClipBox the active app.
@@ -221,8 +227,26 @@ class PopupWindow {
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] _ in
-            self?.close()
+            guard let self = self, !self.suppressAutoClose else { return }
+            self.close()
         }
+    }
+
+    // MARK: - File Dialog Coordination
+
+    /// Call before presenting NSSavePanel/NSOpenPanel.
+    /// Disables outside-click auto-close so clicking inside the file dialog
+    /// doesn't dismiss the popup behind it.
+    func beginFileDialog() {
+        suppressAutoClose = true
+    }
+
+    /// Call from the file dialog's completion handler.
+    /// Re-enables auto-close and brings the popup back to the front so any
+    /// follow-up SwiftUI alerts attached to it become visible and key.
+    func endFileDialog() {
+        suppressAutoClose = false
+        panel?.makeKeyAndOrderFront(nil)
     }
 
     // MARK: - Close
@@ -262,7 +286,7 @@ class PopupWindow {
     /// Default placement: just right of and slightly below the cursor.
     /// If that would clip a screen edge, we mirror to the opposite side.
     private func positionPanel(_ panel: NSPanel, at cursor: CGPoint) {
-        let size   = NSSize(width: 340, height: 400)
+        let size   = NSSize(width: 340, height: 420)
         let offset: CGFloat = 10
 
         // Find which screen the cursor is on. Fall back to the main screen.
@@ -298,7 +322,7 @@ class PopupWindow {
     /// given screen-space rect — used when the popup is summoned from the
     /// menu-bar status item.
     private func positionPanel(_ panel: NSPanel, anchoredTo anchor: NSRect) {
-        let size = NSSize(width: 340, height: 400)
+        let size = NSSize(width: 340, height: 420)
         let gap: CGFloat = 4
 
         // Find which screen the anchor lives on. Fall back to main.

@@ -18,10 +18,11 @@ Press **⌘⇧V** (or your custom shortcut) from any app to summon a floating po
 
 ### Pinned Items
 - **Pin anything permanently** — Pin any item from History to keep it in the Pinned tab forever, unaffected by the history limit or Clear.
+- **Capacity** — Up to **100 pinned items**. When you reach the limit, ClipBox tells you so you can unpin something deliberately instead of silently dropping a pin you just chose.
 - **Public pin** — Item displays and pastes normally.
 - **Private pin** — The row shows bullets scaled to the text length so you can tell at a glance how long the content is. A custom label is shown instead of content. The real content is still pasted as-is — hiding is purely visual.
 - **Privacy toggle** — A lock button sits next to the tag flag on every pinned row. Closed lock = private, open lock = public. Tap to switch instantly; going public→private opens a label-entry dialog.
-- **Press-and-hold reveal** — For short private items (≤ 40 chars), press and hold the eye icon to momentarily reveal the text; release to hide it again.
+- **Press-and-hold reveal** — For short private items (≤ 30 chars), press and hold the eye icon to momentarily reveal the text; release to hide it again.
 - **Popover reveal** — For longer private items, the eye icon opens a floating preview popover.
 - **Tag on pin** — Choose or create a tag directly from the pin dialog.
 
@@ -30,17 +31,25 @@ Press **⌘⇧V** (or your custom shortcut) from any app to summon a floating po
 - **Tag detail view** — Click a tag flag to see only its items; navigate back with the back button or **Esc**.
 - **Assign after pinning** — Click the flag icon on any pinned row to change or remove its tag at any time.
 - **Inline tag creation** — Create a new tag directly from the pin dialog or the flag popover, without leaving your workflow.
-- **Edit tags** — Rename or recolor a tag from the detail view header.
-- **Delete tags** — Choose to move items to Untagged or delete them together with the tag.
+- **Edit tags** — Right-click any tag flag → **Edit…** to rename or recolor.
+- **Delete tags** — Right-click any tag flag → **Delete Tag**, then choose to move items to Untagged or delete them together with the tag.
 - **Clear tag** — Clearing from inside a tag detail view sends the tag and all its items to Recently Deleted.
 
 ### Recently Deleted
 - **Soft-delete** — Nothing is permanently erased immediately. Deleting a history item, unpinning, or using any Clear button moves items to Recently Deleted first.
-- **7-day auto-expiry** — Items are automatically and permanently removed 7 days after deletion. The footer shows "Auto-Clean in Xd" so you always know how soon the next cleanup is.
+- **7-day auto-expiry** — Items are automatically and permanently removed 7 days after deletion. The footer shows "Auto-Clean in X days" (or "Auto-Clean today") so you always know how soon the next cleanup is.
+- **Capacity** — Up to **200 entries**. When exceeded the oldest are permanently dropped (FIFO), so a single afternoon of mass-deletes can't balloon storage.
 - **Recover items** — Restore a single item with the ↩ button, or restore everything at once with **Recover All** (confirmation required).
 - **Delete forever** — Remove a single item permanently with the 🗑 button, or wipe everything with **Delete All** (confirmation required).
 - **Tag restoration** — If a recovered item belonged to a tag that was since deleted, the tag is recreated automatically so the item lands back exactly where it was.
 - **Smart badge** — The "Recently Deleted" badge in the footer is grayed-out when empty and fills with a solid background when items are waiting, making it easy to spot.
+
+### Backup & Restore
+- **One-file backup** — Export everything (settings, tags, pinned items, history, Recently Deleted) into a single `.clipboxbackup` file from the Settings header.
+- **Compressed** — Uses LZFSE compression (typically 5–10× smaller than raw JSON+base64), so backups stay compact even with many images.
+- **Format-validated import** — Files are checked by magic header and version before any state is touched; invalid or future-version files are rejected with a specific error message.
+- **Background processing** — Encode and decode run on a background queue with a spinner in the Settings header, so the UI stays responsive even for backups with dozens of images.
+- **Safe replace** — Importing replaces all clipboard data and settings; ClipBox asks for confirmation first and lands you back on the History tab so the restored data is immediately visible.
 
 ### Search
 - **Type-ahead** — Start typing anywhere in the popup to instantly filter the visible list.
@@ -107,9 +116,9 @@ ClipBox will prompt for Accessibility access. This is required for the global sh
 | Action | How |
 |--------|-----|
 | Open popup | Global shortcut (default **⌘⇧V**) from any app |
-| Open from menu bar | Click the clipboard icon in the menu bar |
+| Open from menu bar | Click the clipboard icon (enable it first in Settings → **Show in Menu Bar**) |
 | Close popup | **Esc** or click outside |
-| Move popup | Click and drag |
+| Move popup | Click and drag the popup background |
 
 ### Navigation
 
@@ -123,7 +132,6 @@ ClipBox will prompt for Accessibility access. This is required for the global sh
 | Paste selected item | **Enter** or click the row |
 | Search | Just type — any character without a modifier starts filtering |
 | Clear search | **Esc** or click **✕** in the footer |
-| Clear search entirely | **⌘A** |
 
 ### Items
 
@@ -151,9 +159,9 @@ ClipBox will prompt for Accessibility access. This is required for the global sh
 | Assign / change a tag after pinning | Click the **flag icon** on any pinned row |
 | Create a new tag | Any tag popover → **New tag…** → enter name + pick color → confirm |
 | Enter a tag folder | Click the tag flag in the Pinned tab |
-| Edit a tag | Inside the tag detail view → **pencil icon** in the header |
-| Delete a tag | Inside the tag detail view → **trash icon** → choose to move items or delete them |
-| Clear a tag and its items | Inside a tag detail view → **Clear** button |
+| Edit a tag | Right-click the tag flag → **Edit…** → change name or color |
+| Delete a tag | Right-click the tag flag → **Delete Tag** → choose to move items to Untagged or delete them |
+| Clear a tag and its items | Inside a tag detail view → **Clear** button → confirm |
 
 ### Settings
 
@@ -166,6 +174,8 @@ Open the popup → **Settings** button:
 | **History Size** | Maximum items kept (10 / 15 / 20 / 25 / 50) |
 | **Global Shortcut** | Click **Record**, press your desired modifier+key combo — saved automatically |
 | **Reset to Defaults** | Restores all settings to factory values |
+| **Export backup** ⬆ | Save everything to a `.clipboxbackup` file (settings, tags, pinned, history, Recently Deleted) |
+| **Import backup** ⬇ | Restore from a `.clipboxbackup` file — confirmation required, replaces all current data |
 
 **Auto-start on login (optional)**
 
@@ -181,9 +191,11 @@ System Settings → General → Login Items → **+** → select `ClipBox.app`.
 
 **Tags** — Tags are stored as JSON in UserDefaults (`com.clipbox.tags`). Each pinned item carries a `tagID` that links it to a tag. Tag operations (create, edit, delete, assign) update both the tag list and the affected items atomically.
 
-**Pinned items** — Stored in a separate persistent list, independent of the history limit. A private pin records a user-supplied description and an `isHidden` flag; real content is preserved and pasted normally — the masking is purely visual. The number of bullet dots scales proportionally with the actual text length so the row gives a size hint without revealing content.
+**Pinned items** — Stored in a separate persistent list, independent of the history limit. Capped at 100 entries; attempts past that surface a `clipBoxPinLimitReached` notification so the popup can ask the user to unpin first. A private pin records a user-supplied description and an `isHidden` flag; real content is preserved and pasted normally — the masking is purely visual. The number of bullet dots scales proportionally with the actual text length so the row gives a size hint without revealing content.
 
-**Recently Deleted** — Every delete or clear operation performs a soft-delete: items are moved to `deletedItems` with a `deletedAt` timestamp and a snapshot of their tag name/color. On launch, items older than 7 days are pruned automatically. Recovering an item restores it to its original list (history or pinned); if the original tag no longer exists, it is recreated from the snapshot so the item lands back in its original folder. All three arrays (history, pinned, deleted) are persisted independently and share the same image file pool — orphaned image files are pruned after any operation that can remove items.
+**Recently Deleted** — Every delete or clear operation performs a soft-delete: items are moved to `deletedItems` with a `deletedAt` timestamp and a snapshot of their tag name/color. On launch and whenever the view opens, items older than 7 days are pruned automatically. The list is also capped at 200 entries — any overflow is permanently dropped FIFO. Recovering an item restores it to its original list (history or pinned); if the original tag no longer exists, it is recreated from the snapshot so the item lands back in its original folder. All three arrays (history, pinned, deleted) are persisted independently and share the same image file pool — orphaned image files are pruned after any operation that can remove items.
+
+**Backup format** — Export produces a `.clipboxbackup` file: a 4-byte magic header (`CBB\x01`) followed by an LZFSE-compressed JSON document containing settings, tags, pinned items, history, and Recently Deleted. Images are embedded as base64 PNG strings inside the JSON, then compressed end-to-end so the file is typically 5–10× smaller than the raw payload. Import validates header → decompression → JSON → version (rejects anything newer than the current build) before any live state is touched, so a malformed file can never corrupt the running app. Encode and decode both run on a background queue while the UI shows a spinner.
 
 **Global hotkey** — `HotkeyManager` installs a `CGEventTap` at the session level, seeing keypresses before any app. The configured shortcut is saved as JSON in UserDefaults and restored on launch. Only the exact modifier combination matches — **⌘V** won't accidentally trigger a **⌘⇧V** shortcut.
 
@@ -222,22 +234,20 @@ ClipBox/
 ├── Clipboard/
 │   ├── ClipboardItem.swift         # Data model: content, pin metadata, tagID
 │   ├── ClipBoxTag.swift            # Tag model: id, name, colorHex; 10-color palette
-│   └── ClipboardManager.swift      # History, pinned items, tags, persistence, paste
+│   └── ClipboardManager.swift      # History, pinned items, tags, backup, persistence, paste
 ├── Hotkey/
-│   └── HotkeyManager.swift         # CGEventTap global hotkey; shortcut recording
+│   └── HotkeyManager.swift         # CGEventTap global hotkey; in-memory shortcut cache
 ├── Settings/
 │   └── Shortcut.swift              # Codable model for the configured key combo
-├── UI/
-│   ├── PopupWindow.swift           # NSPanel lifecycle and positioning
-│   ├── PopupView.swift             # SwiftUI: tabs, tag navigation, search, keyboard handling
-│   ├── ClipboardRowView.swift      # Row view; PinOptionsPopover; TagAssignPopover
-│   ├── SettingsView.swift          # Settings slide-over
-│   └── PopoverAnchor.swift         # NSViewRepresentable helper for NSPopover anchoring
-├── Utils/
-│   └── CursorPosition.swift        # Mouse position helper
-└── Resources/
-    └── Info.plist                  # LSUIElement = YES (no Dock icon)
+└── UI/
+    ├── PopupWindow.swift           # NSPanel lifecycle and positioning
+    ├── PopupView.swift             # SwiftUI: tabs, tag navigation, search, keyboard handling
+    ├── ClipboardRowView.swift      # Row view; PinOptionsPopover; TagAssignPopover
+    ├── SettingsView.swift          # Settings slide-over (incl. Export/Import)
+    └── PopoverAnchor.swift         # NSViewRepresentable helper for NSPopover anchoring
 ```
+
+Info.plist keys (`LSUIElement = YES`, app category, etc.) are auto-generated from `INFOPLIST_KEY_*` build settings in `project.pbxproj` — no standalone Info.plist file in the repo.
 
 ---
 
@@ -249,7 +259,7 @@ cd ClipBox
 open ClipBox.xcodeproj
 ```
 
-Select the **ClipBox** target → **Info** tab → confirm `Application is agent (UIElement)` is set to `YES`. Press **⌘R** to build and run.
+Select the **ClipBox** target → **Signing & Capabilities** → set your **Team**. Press **⌘R** to build and run. Requires Xcode 16+ and macOS 12+.
 
 ---
 
