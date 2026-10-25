@@ -1,5 +1,13 @@
 # ClipBox
 
+<p align="center">
+  <a href="docs/media/clipbox-showreel.mp4">
+    <img src="docs/media/clipbox-showreel.gif" alt="ClipBox in 30 seconds: clipboard history, private pins, tags & search, Recently Deleted" width="100%">
+  </a>
+  <br>
+  <sub>▶ <a href="docs/media/clipbox-showreel.mp4">Watch in full HD (MP4, 30 s)</a></sub>
+</p>
+
 ClipBox is a lightweight macOS **clipboard history manager** that runs entirely in the background, keeping a full record of everything you copy — text and images — so nothing is ever lost.
 
 Press **⌘⇧V** (or your custom shortcut) from any app to summon a floating popup near your cursor. Browse your clipboard history, pin important items to keep them forever, organize them with color-coded tags, and paste any of them back with a single keystroke.
