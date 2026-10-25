@@ -40,11 +40,22 @@ class ClipboardManager: ObservableObject {
         return v > 0 ? v : Self.historyLimitDefault
     }
 
+    /// Truncates `history` to the current `maxItems`. Soft-deletes the dropped
+    /// items into Recently Deleted instead of hard-erasing them — lowering the
+    /// History Size in Settings (or hitting Reset to Defaults) is a config
+    /// change, not an explicit "delete my data" gesture, so the items should
+    /// stay recoverable for the usual 7-day window.
     func applyHistoryLimit() {
         let limit = maxItems
         guard history.count > limit else { return }
+        let dropped = history.suffix(history.count - limit).map {
+            $0.withDeletion(tagName: nil, tagColor: nil, fromPinned: false)
+        }
         history = Array(history.prefix(limit))
+        deletedItems.insert(contentsOf: dropped, at: 0)
+        enforceDeletedItemsLimit()
         saveHistory()
+        saveDeletedItems()
     }
 
     private let maxImageDimension: CGFloat = 1024
@@ -105,8 +116,14 @@ class ClipboardManager: ObservableObject {
     /// Assigns (or removes) a tag on a pinned item, identified by `itemID`.
     func assignTag(_ tagID: UUID?, to itemID: UUID) {
         guard let index = pinnedItems.firstIndex(where: { $0.id == itemID }) else { return }
+        let previousTagID = pinnedItems[index].tagID
         pinnedItems[index] = pinnedItems[index].withTagID(tagID)
         savePinnedItems()
+        // If the item used to belong to a tag, the old tag may now be empty —
+        // prune so empty flags don't linger in the UI until restart.
+        if previousTagID != nil, previousTagID != tagID {
+            pruneEmptyTags()
+        }
     }
 
     /// Toggles a pinned item's privacy. Pass `isHidden: true` with a description
@@ -328,10 +345,12 @@ class ClipboardManager: ObservableObject {
         saveHistory()
     }
 
+    /// Removes a pinned item via the History row's "Already pinned" popover.
+    /// Routes through `softDeletePinnedItem` so the user's privacy label,
+    /// description, and tag assignment survive in Recently Deleted — a hard
+    /// delete here would silently destroy that metadata with no recovery.
     func unpinItem(_ item: ClipboardItem) {
-        pinnedItems.removeAll { $0.id == item.id }
-        savePinnedItems()
-        pruneOrphanedImageFiles()
+        softDeletePinnedItem(item)
     }
 
     private func savePinnedItems() {
@@ -471,17 +490,25 @@ class ClipboardManager: ObservableObject {
         enforceDeletedItemsLimit()
         savePinnedItems()
         saveDeletedItems()
+        if item.tagID != nil { pruneEmptyTags() }
         pruneOrphanedImageFiles()
     }
 
     /// Moves a deleted item back to where it came from (history or pinnedItems).
-    /// Recreates its tag if the tag was deleted in the meantime.
+    /// Recreates its tag if the tag was deleted in the meantime. Recovery of a
+    /// pinned item is refused when the pin list is already full and the
+    /// recovery wouldn't displace a duplicate — the item stays in Recently
+    /// Deleted and the popup shows the same alert as a fresh pin attempt.
     func recoverItem(_ item: ClipboardItem) {
-        deletedItems.removeAll { $0.id == item.id }
-
         let recovered = item.withRecovery()
 
         if item.deletedFromPinned {
+            let duplicateExists = pinnedItems.contains { $0.deduplicationKey == recovered.deduplicationKey }
+            if !duplicateExists, pinnedItems.count >= Self.pinnedLimit {
+                NotificationCenter.default.post(name: .clipBoxPinLimitReached, object: nil)
+                return
+            }
+            deletedItems.removeAll { $0.id == item.id }
             // Recreate the tag if it's missing.
             if let tagID = item.tagID, !tags.contains(where: { $0.id == tagID }),
                let name = item.deletedTagName, let color = item.deletedTagColor {
@@ -495,6 +522,7 @@ class ClipboardManager: ObservableObject {
             pinnedItems.insert(recovered, at: 0)
             savePinnedItems()
         } else {
+            deletedItems.removeAll { $0.id == item.id }
             history.removeAll { $0.deduplicationKey == recovered.deduplicationKey }
             history.insert(recovered, at: 0)
             if history.count > maxItems { history = Array(history.prefix(maxItems)) }
@@ -506,19 +534,28 @@ class ClipboardManager: ObservableObject {
 
     /// Recovers every item in Recently Deleted in one shot.
     /// History items that exceed maxItems are placed back in Recently Deleted
-    /// rather than being silently discarded.
+    /// rather than being silently discarded. Pinned items that would exceed
+    /// `pinnedLimit` likewise stay in Recently Deleted; we notify the popup so
+    /// it can show the same alert as a manual over-limit pin attempt.
     func recoverAllItems() {
         let toRecover = deletedItems
-        deletedItems.removeAll()
-
+        var stillDeleted: [ClipboardItem] = []
         var didCreateTag = false
-        var overflowBack: [ClipboardItem] = []
+        var pinLimitHit  = false
 
         // Iterate oldest-first so the most recently deleted item ends up at
         // index 0 after we insert each recovered item at position 0.
         for item in toRecover.reversed() {
             let recovered = item.withRecovery()
             if item.deletedFromPinned {
+                let duplicateExists = pinnedItems.contains { $0.deduplicationKey == recovered.deduplicationKey }
+                if !duplicateExists, pinnedItems.count >= Self.pinnedLimit {
+                    // Keep the original (still with deletion metadata) so the
+                    // 7-day countdown is preserved.
+                    stillDeleted.append(item)
+                    pinLimitHit = true
+                    continue
+                }
                 if let tagID = item.tagID, !tags.contains(where: { $0.id == tagID }),
                    let name = item.deletedTagName, let color = item.deletedTagColor {
                     tags.append(ClipBoxTag(id: tagID, name: name, colorHex: color))
@@ -532,20 +569,28 @@ class ClipboardManager: ObservableObject {
             }
         }
 
+        // `stillDeleted` was built oldest-first; reverse so the array as a
+        // whole stays newest-first like `deletedItems`.
+        deletedItems = stillDeleted.reversed()
+
         if history.count > maxItems {
             let excess = Array(history.dropFirst(maxItems))
             history = Array(history.prefix(maxItems))
-            overflowBack = excess.map {
+            let overflowBack = excess.map {
                 $0.withDeletion(tagName: nil, tagColor: nil, fromPinned: false)
             }
             deletedItems.insert(contentsOf: overflowBack, at: 0)
-            enforceDeletedItemsLimit()
         }
+        enforceDeletedItemsLimit()
 
         if didCreateTag { saveTags() }
         saveHistory()
         savePinnedItems()
         saveDeletedItems()
+
+        if pinLimitHit {
+            NotificationCenter.default.post(name: .clipBoxPinLimitReached, object: nil)
+        }
     }
 
     /// Permanently removes an item from Recently Deleted — no recovery possible.
@@ -762,9 +807,15 @@ class ClipboardManager: ObservableObject {
             pb.setString(text, forType: .string)
 
         case .image(let image):
-            guard let data = image.pngData() else { return }
+            // Write both TIFF and PNG. Many AppKit apps (Preview, Pages,
+            // Keynote, several mail clients) only look at .tiff on paste and
+            // leave the destination empty when only .png is present.
+            let pngData  = image.pngData()
+            let tiffData = image.tiffRepresentation
+            guard pngData != nil || tiffData != nil else { return }
             pb.clearContents()
-            pb.setData(data, forType: .png)
+            if let tiff = tiffData { pb.setData(tiff, forType: .tiff) }
+            if let png  = pngData  { pb.setData(png,  forType: .png)  }
         }
 
         lastChangeCount = pb.changeCount
@@ -915,10 +966,13 @@ extension ClipboardManager {
         StatusBarController.shared.setVisible(d.showInMenuBar)
         HotkeyManager.shared.currentShortcut  = d.shortcut
 
+        // Clamp every list to its hard limit so a stale or hand-edited backup
+        // can't drag the running app past invariants the rest of the code
+        // assumes (e.g. pinned-row counts in alerts, FIFO eviction in deleted).
         tags         = d.tags
-        pinnedItems  = d.pinnedItems
+        pinnedItems  = Array(d.pinnedItems.prefix(Self.pinnedLimit))
         history      = Array(d.history.prefix(maxItems))
-        deletedItems = d.deletedItems
+        deletedItems = Array(d.deletedItems.prefix(Self.deletedItemsLimit))
 
         // Drop items already past the 7-day window inside the backup so they
         // don't briefly resurface in Recently Deleted, and drop tags with no

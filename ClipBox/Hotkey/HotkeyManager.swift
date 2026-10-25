@@ -79,7 +79,9 @@ class HotkeyManager {
     // MARK: - Private Properties
 
     /// The actual event tap object registered with the system.
-    private var eventTap: CFMachPort?
+    /// `fileprivate` so the C callback can re-enable it after a system
+    /// `tapDisabledByTimeout` event without going through a getter.
+    fileprivate var eventTap: CFMachPort?
 
     /// A run-loop source wrapping the event tap so it integrates with
     /// the main run loop (which drives all macOS event processing).
@@ -139,18 +141,28 @@ class HotkeyManager {
         // since C functions can't capture Swift variables like closures can.
         let callback: CGEventTapCallBack = { _, type, event, refcon in
 
-            // Only handle actual keyDown events (the tap also gets called for
-            // tap-disabled notifications, which we ignore).
-            guard type == .keyDown else {
-                return Unmanaged.passRetained(event)
-            }
-
             // Recover our HotkeyManager instance from the raw pointer so we can
             // read the current shortcut config and the recording flag.
             guard let ref = refcon else {
                 return Unmanaged.passRetained(event)
             }
             let manager = Unmanaged<HotkeyManager>.fromOpaque(ref).takeUnretainedValue()
+
+            // The system disables the tap if our callback ever takes too long
+            // (or after sleep/wake on some macOS versions). Without re-enabling,
+            // the global shortcut silently stops working until app relaunch.
+            // These event types arrive regardless of the events-of-interest mask.
+            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                if let tap = manager.eventTap {
+                    CGEvent.tapEnable(tap: tap, enable: true)
+                }
+                return Unmanaged.passRetained(event)
+            }
+
+            // Only handle actual keyDown events from here on.
+            guard type == .keyDown else {
+                return Unmanaged.passRetained(event)
+            }
 
             // While the user is recording a new shortcut in Settings, pass every
             // keypress through untouched — the popup's KeyablePanel will capture

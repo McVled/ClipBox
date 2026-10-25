@@ -219,15 +219,27 @@ struct ClipboardItem: Identifiable {
         case .text(let t):
             return "text:\(t)"
         case .image(let img):
-            guard let tiff = img.tiffRepresentation else {
+            // Hash the PNG encoding instead of the TIFF representation —
+            // `NSImage.tiffRepresentation` is non-deterministic across copies
+            // of the same visual image (metadata, compression variants),
+            // which used to surface as duplicate history entries when the
+            // same image was copied twice.  PNG via NSBitmapImageRep with
+            // no extra properties is stable for identical pixel data.
+            guard let png = pngBytes(from: img) else {
                 return "image:fallback:\(img.size.width)x\(img.size.height)"
             }
             // FNV-1a-style hash of first 64 KB + total byte count.
-            var h: UInt64 = UInt64(tiff.count) &* 1099511628211
-            tiff.prefix(65536).withUnsafeBytes { buffer in
+            var h: UInt64 = UInt64(png.count) &* 1099511628211
+            png.prefix(65536).withUnsafeBytes { buffer in
                 for byte in buffer { h = (h ^ UInt64(byte)) &* 1099511628211 }
             }
-            return "image:\(tiff.count):\(h)"
+            return "image:\(png.count):\(h)"
         }
+    }
+
+    private static func pngBytes(from image: NSImage) -> Data? {
+        guard let tiff   = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
     }
 }

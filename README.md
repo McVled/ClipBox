@@ -243,8 +243,7 @@ ClipBox/
     ├── PopupWindow.swift           # NSPanel lifecycle and positioning
     ├── PopupView.swift             # SwiftUI: tabs, tag navigation, search, keyboard handling
     ├── ClipboardRowView.swift      # Row view; PinOptionsPopover; TagAssignPopover
-    ├── SettingsView.swift          # Settings slide-over (incl. Export/Import)
-    └── PopoverAnchor.swift         # NSViewRepresentable helper for NSPopover anchoring
+    └── SettingsView.swift          # Settings slide-over (incl. Export/Import)
 ```
 
 Info.plist keys (`LSUIElement = YES`, app category, etc.) are auto-generated from `INFOPLIST_KEY_*` build settings in `project.pbxproj` — no standalone Info.plist file in the repo.

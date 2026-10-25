@@ -847,11 +847,18 @@ private enum ClipBoxDateFormatters {
         f.dateFormat = "d MMM"
         return f
     }()
+
+    static let dayWithYear: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "d MMM yyyy"
+        return f
+    }()
 }
 
 private extension Date {
     var clipBoxDisplay: String {
-        let seconds = Date().timeIntervalSince(self)
+        let now     = Date()
+        let seconds = now.timeIntervalSince(self)
         if seconds < 60 {
             return "now"
         } else if seconds < 3600 {
@@ -860,8 +867,12 @@ private extension Date {
             return ClipBoxDateFormatters.time.string(from: self)
         } else if Calendar.current.isDateInYesterday(self) {
             return "Yest " + ClipBoxDateFormatters.time.string(from: self)
-        } else {
+        } else if Calendar.current.isDate(self, equalTo: now, toGranularity: .year) {
             return ClipBoxDateFormatters.day.string(from: self)
+        } else {
+            // Older than this calendar year — include the year so a pin from
+            // last March isn't indistinguishable from this March.
+            return ClipBoxDateFormatters.dayWithYear.string(from: self)
         }
     }
 }

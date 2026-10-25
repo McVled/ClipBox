@@ -207,7 +207,11 @@ class PopupWindow {
         if let anchor = anchor {
             positionPanel(newPanel, anchoredTo: anchor)
         } else if !followCursor, let lastPos = lastPosition {
-            newPanel.setFrameOrigin(lastPos)
+            // Clamp to a visible screen. The saved position can land off-screen
+            // if the user dragged the panel near (or onto) a monitor that was
+            // later disconnected, resized, or rearranged — without this guard
+            // the popup would open invisibly and key events would go nowhere.
+            newPanel.setFrameOrigin(Self.clamp(origin: lastPos, size: newPanel.frame.size))
         } else {
             positionPanel(newPanel, at: mouseLocation)
         }
@@ -316,6 +320,25 @@ class PopupWindow {
         if y + size.height > sf.maxY { y = sf.maxY - size.height - offset }
 
         panel.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    /// Pulls `origin` onto whichever currently-connected screen most overlaps a
+    /// rect of `size` starting there. Falls back to the main screen, then to
+    /// the origin unchanged if there is no screen at all (which shouldn't
+    /// happen in practice but keeps this total).
+    private static func clamp(origin: NSPoint, size: NSSize) -> NSPoint {
+        let rect    = NSRect(origin: origin, size: size)
+        let screens = NSScreen.screens
+        let screen  = screens.first(where: { $0.visibleFrame.intersects(rect) })
+                   ?? NSScreen.main
+        guard let sf = screen?.visibleFrame else { return origin }
+        var x = origin.x
+        var y = origin.y
+        if x < sf.minX                  { x = sf.minX }
+        if x + size.width  > sf.maxX    { x = sf.maxX - size.width }
+        if y < sf.minY                  { y = sf.minY }
+        if y + size.height > sf.maxY    { y = sf.maxY - size.height }
+        return NSPoint(x: x, y: y)
     }
 
     /// Positions the panel horizontally centered on and vertically below a

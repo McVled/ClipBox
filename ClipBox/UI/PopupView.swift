@@ -999,6 +999,12 @@ extension PopupView {
         guard !query.isEmpty else { return items }
         let isImageQuery = Self.imageKeywords.contains(query)
         return items.filter { item in
+            // Private items: never expose their content to search — only the
+            // user-supplied label is matchable. Otherwise typing the password
+            // into the search box would visually surface the matching row.
+            if item.isHidden {
+                return (item.description ?? "").lowercased().contains(query)
+            }
             switch item.content {
             case .text(let t): return t.lowercased().contains(query)
             case .image:       return isImageQuery || (item.description ?? "").lowercased().contains(query)
