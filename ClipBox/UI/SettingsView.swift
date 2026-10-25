@@ -227,7 +227,7 @@ struct SettingsView: View {
 
             // Subtitle + Record button on the same row
             HStack(alignment: .top) {
-                Text("Must include at least one modifier (⌘ ⇧ ⌥ ⌃). Plain ⌘C/V/X/Z/A/H/M/Q/W are reserved. Press Escape to cancel.")
+                Text("Must include ⌘, ⌥ or ⌃ (⇧ alone only with F1–F12). Plain ⌘C/V/X/Z/A/H/M/Q/W are reserved. Press Escape to cancel.")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary.opacity(0.7))
                     .fixedSize(horizontal: false, vertical: true)

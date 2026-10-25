@@ -34,10 +34,19 @@ struct Shortcut: Codable, Equatable {
         keyLabel: "V"
     )
 
-    /// True if at least one modifier is set. We require this so the user can't
-    /// accidentally bind a plain letter, which would intercept normal typing.
+    /// Hardware key codes for F1–F12. These keys never produce text, so they
+    /// are safe to bind with ⇧ alone.
+    private static let functionKeyCodes: Set<UInt16> = [
+        122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111
+    ]
+
+    /// True if the combination is safe to intercept globally. It must include
+    /// ⌘, ⌥ or ⌃ — ⇧ alone is not enough for a typing key, because ⇧A or ⇧1
+    /// would swallow every capital A or "!" typed system-wide. ⇧ alone is
+    /// accepted only for F1–F12.
     var hasModifier: Bool {
-        command || shift || option || control
+        if command || option || control { return true }
+        return shift && Self.functionKeyCodes.contains(keyCode)
     }
 
     /// Pretty string for the UI, e.g. "⌃⌥⇧⌘V".

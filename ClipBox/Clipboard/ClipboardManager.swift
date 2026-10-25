@@ -93,6 +93,10 @@ class ClipboardManager: ObservableObject {
         loadHistory()
         loadPinnedItems()
         loadDeletedItems()
+        // Trim only after every list is loaded: saving prunes image files that
+        // no list references, so saving earlier would treat pinned and Recently
+        // Deleted images as orphans and delete them from disk.
+        applyHistoryLimit()
         pruneExpiredDeletedItems()
     }
 
@@ -314,8 +318,9 @@ class ClipboardManager: ObservableObject {
             }
         }
 
-        history = Array(loaded.prefix(maxItems))
-        if loaded.count > maxItems { saveHistory() }
+        // Left untrimmed on purpose — `init` applies the history limit once all
+        // lists are loaded.
+        history = loaded
     }
 
     // MARK: - Pinned Items
@@ -325,10 +330,17 @@ class ClipboardManager: ObservableObject {
     }
 
     func pinItem(_ item: ClipboardItem, description: String? = nil, isHidden: Bool = false, tagID: UUID? = nil) {
-        guard !pinnedItems.contains(where: { $0.deduplicationKey == item.deduplicationKey }) else { return }
+        // The pin dialog's "Create & Pin" creates its tag before calling here,
+        // so every refusal below prunes empty tags — otherwise that new tag
+        // would linger with zero items until the next launch.
+        guard !pinnedItems.contains(where: { $0.deduplicationKey == item.deduplicationKey }) else {
+            pruneEmptyTags()
+            return
+        }
         // Refuse new pins past the hard limit. Posting a notification lets the
         // popup show an alert without ClipboardManager knowing about SwiftUI.
         guard pinnedItems.count < Self.pinnedLimit else {
+            pruneEmptyTags()
             NotificationCenter.default.post(name: .clipBoxPinLimitReached, object: nil)
             return
         }
@@ -964,7 +976,7 @@ extension ClipboardManager {
         UserDefaults.standard.set(d.historyLimit, forKey: Self.historyLimitKey)
         PopupWindow.shared.followCursor       = d.followCursor
         StatusBarController.shared.setVisible(d.showInMenuBar)
-        HotkeyManager.shared.currentShortcut  = d.shortcut
+        HotkeyManager.shared.currentShortcut  = d.shortcut.hasModifier ? d.shortcut : .default
 
         // Clamp every list to its hard limit so a stale or hand-edited backup
         // can't drag the running app past invariants the rest of the code

@@ -59,8 +59,11 @@ class HotkeyManager {
         get {
             if let cached = _shortcutCache { return cached }
             let loaded: Shortcut
+            // A shortcut saved by an older build may be ⇧-only (e.g. ⇧A), which
+            // would swallow normal typing — fall back to the default instead.
             if let data = UserDefaults.standard.data(forKey: Self.shortcutKey),
-               let s = try? JSONDecoder().decode(Shortcut.self, from: data) {
+               let s = try? JSONDecoder().decode(Shortcut.self, from: data),
+               s.hasModifier {
                 loaded = s
             } else {
                 loaded = .default
@@ -143,8 +146,11 @@ class HotkeyManager {
 
             // Recover our HotkeyManager instance from the raw pointer so we can
             // read the current shortcut config and the recording flag.
+            // Pass-through events are returned with `passUnretained`: the
+            // system owns `event`, and an extra retain here would leak one
+            // CGEvent for every keystroke typed anywhere on the Mac.
             guard let ref = refcon else {
-                return Unmanaged.passRetained(event)
+                return Unmanaged.passUnretained(event)
             }
             let manager = Unmanaged<HotkeyManager>.fromOpaque(ref).takeUnretainedValue()
 
@@ -156,19 +162,19 @@ class HotkeyManager {
                 if let tap = manager.eventTap {
                     CGEvent.tapEnable(tap: tap, enable: true)
                 }
-                return Unmanaged.passRetained(event)
+                return Unmanaged.passUnretained(event)
             }
 
             // Only handle actual keyDown events from here on.
             guard type == .keyDown else {
-                return Unmanaged.passRetained(event)
+                return Unmanaged.passUnretained(event)
             }
 
             // While the user is recording a new shortcut in Settings, pass every
             // keypress through untouched — the popup's KeyablePanel will capture
             // the combination locally.
             if manager.isRecording {
-                return Unmanaged.passRetained(event)
+                return Unmanaged.passUnretained(event)
             }
 
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
@@ -193,7 +199,7 @@ class HotkeyManager {
             }
 
             // For any other key, pass the event through unchanged.
-            return Unmanaged.passRetained(event)
+            return Unmanaged.passUnretained(event)
         }
 
         // Convert `self` to an untyped pointer so we can pass it to the C callback.
